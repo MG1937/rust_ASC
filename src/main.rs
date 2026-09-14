@@ -225,29 +225,21 @@ fn handle_getclass(args: &CliArgs) {
     }
 
     use crate::asc_client::asc_handler::AscHandler;
-    let source_code_result = AscHandler::new(args.debug).getclass(&dex_buf, &dalvik_class);
+    let source_code = AscHandler::new(args.debug).getclass(&dex_buf, &dalvik_class);
     let t_end = Instant::now();
 
     if args.debug {
         println!("[DEBUG] Total Execution Time: {} us", t_end.duration_since(t_start).as_micros());
     }
 
-    match source_code_result {
-        Ok(source_code) => {
-            if let Some(ref output) = args.output {
-                let mut content = source_code.clone();
-                if !content.ends_with("\n") {
-                    content.push('\n');
-                }
-                fs::write(output, content).unwrap();
-            }
-            println!("{}", source_code);
+    if let Some(ref output) = args.output {
+        let mut content = source_code.clone();
+        if !content.ends_with("\n") {
+            content.push('\n');
         }
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            std::process::exit(1);
-        }
+        fs::write(output, content).unwrap();
     }
+    print!("{}", source_code);
 }
 
 fn handle_findrefs(args: &CliArgs) {

@@ -656,25 +656,25 @@ impl<'a, 'b> DexBuilder<'a, 'b> {
         self.out[40..44].copy_from_slice(&(0x12345678u32).to_le_bytes());
         // map_off
         self.out[52..56].copy_from_slice(&map_list_off.to_le_bytes());
-        // string_ids
-        self.out[56..64].copy_from_slice(&(self.im.str_restruct.len() as u32).to_le_bytes());
+        // string_ids: [size(4), offset(4)]
+        self.out[56..60].copy_from_slice(&(self.im.str_restruct.len() as u32).to_le_bytes());
         self.out[60..64].copy_from_slice(&string_ids_off.to_le_bytes());
-        // type_ids
+        // type_ids: [size(4), offset(4)]
         self.out[64..68].copy_from_slice(&(self.im.type_restruct.len() as u32).to_le_bytes());
         self.out[68..72].copy_from_slice(&type_ids_off.to_le_bytes());
-        // proto_ids
+        // proto_ids: [size(4), offset(4)]
         self.out[72..76].copy_from_slice(&(self.im.proto_restruct.len() as u32).to_le_bytes());
         self.out[76..80].copy_from_slice(&proto_ids_off.to_le_bytes());
-        // field_ids
+        // field_ids: [size(4), offset(4)]
         self.out[80..84].copy_from_slice(&(self.im.field_restruct.len() as u32).to_le_bytes());
         self.out[84..88].copy_from_slice(&field_ids_off.to_le_bytes());
-        // method_ids
+        // method_ids: [size(4), offset(4)]
         self.out[88..92].copy_from_slice(&(self.im.method_restruct.len() as u32).to_le_bytes());
         self.out[92..96].copy_from_slice(&method_ids_off.to_le_bytes());
-        // class_defs
+        // class_defs: [size(4), offset(4)]
         self.out[96..100].copy_from_slice(&1u32.to_le_bytes());
         self.out[100..104].copy_from_slice(&class_defs_off.to_le_bytes());
-        // data_size, data_off
+        // data_size, data_off: [size(4), offset(4)]
         self.out[104..108].copy_from_slice(&(file_size - 0x70).to_le_bytes());
         self.out[108..112].copy_from_slice(&0x70u32.to_le_bytes());
 

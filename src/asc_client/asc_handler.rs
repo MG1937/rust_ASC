@@ -26,7 +26,7 @@ impl AscHandler {
     /// 提取并反编译指定类
     ///
     /// NOTE: decompile_dex_bytes 依赖 androguard，Rust版本尚未实现。
-    pub fn getclass(&self, dex_buf: &[u8], dalvik_class: &str) -> Result<String, String> {
+    pub fn getclass(&self, dex_buf: &[u8], dalvik_class: &str) -> String {
         let mut manager = DexManager::from_bytes(dex_buf.to_vec(), self.debug);
         let new_dex_bytes = manager.extract_and_rebuild(dalvik_class);
         decompile_dex_bytes(&new_dex_bytes, dalvik_class)

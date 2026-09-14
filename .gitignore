@@ -2,6 +2,9 @@
 
 # test artifacts
 output*.txt
+final_*.txt
+stderr.txt
+debug_out.txt
 rust_output.txt
 target/
 
