@@ -4,7 +4,7 @@ use crate::asc_core::findrefs::locator::base_locator::{_debug_log, BaseLocator};
 use crate::asc_core::models::dvm_opcode::opcodes;
 use crate::asc_core::utils::leb128::{read_uleb128_fast, read_uleb128_len};
 use crate::asc_core::utils::tinydex::DEX;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 struct _STRUCT_I;
@@ -62,12 +62,12 @@ pub struct InsnLocator<'a> {
     pub base: BaseLocator<'a>,
     pub parsed: bool,
     // use 16 bytes dense table to achieve O(1) speed
-    pub insn_maps: HashMap<u32, Vec<u32>>, // {insn_off_bucket: [midx, midx2...]}
+    pub insn_maps: BTreeMap<u32, Vec<u32>>, // {insn_off_bucket: [midx, midx2...]}
     pub code_item_start: u32, // fuzzy offset around 16 bytes
     pub code_item_end: u32, // fuzzy too
 
     // for insn verify... bugfix for insn mismatch 20260728
-    pub method_bounds: HashMap<u32, u32>, // {midx: insn_off_start}
+    pub method_bounds: BTreeMap<u32, u32>, // {midx: insn_off_start}
 }
 
 impl<'a> InsnLocator<'a> {
@@ -75,10 +75,10 @@ impl<'a> InsnLocator<'a> {
         let mut locator = InsnLocator {
             base: BaseLocator::new(dex),
             parsed: false,
-            insn_maps: HashMap::new(),
+            insn_maps: BTreeMap::new(),
             code_item_start: 0,
             code_item_end: 0,
-            method_bounds: HashMap::new(),
+            method_bounds: BTreeMap::new(),
         };
         locator
     }
@@ -101,7 +101,6 @@ impl<'a> InsnLocator<'a> {
         let insn_maps = &mut self.insn_maps;
         // need to declare why do this... checkout the diagram in file head
         let insn_bucket_start = insn_off >> 4;
-        let insn_bucket_end = (insn_off + insn_size * 2 - 1) >> 4;
 
         self.method_bounds.insert(midx, insn_off);
 
@@ -116,9 +115,10 @@ impl<'a> InsnLocator<'a> {
             None => vec![midx],
         };
 
-        for i in insn_bucket_start..=insn_bucket_end {
-            insn_maps.insert(i, resolved_midxs.clone());
-        }
+        // Only fill the first bucket. locate() uses BTreeMap::range(..=bucket)
+        // to find the nearest lower bucket, then verifies with insn_verify().
+        // This avoids the O(N) per-method bucket fill loop.
+        insn_maps.insert(insn_bucket_start, resolved_midxs);
     }
 
     // return next class data item pos
@@ -216,12 +216,9 @@ impl<'a> InsnLocator<'a> {
         }
         let t_start = if self.base.debug { Some(Instant::now()) } else { None };
         self._build_map_bymap();
-        if !self.insn_maps.is_empty() {
-            let keys: Vec<&u32> = self.insn_maps.keys().collect();
-            let min_key = **keys.iter().min().unwrap();
-            let max_key = **keys.iter().max().unwrap();
-            self.code_item_start = min_key << 4;
-            self.code_item_end = (max_key + 1) << 4;
+        if let (Some(min_key), Some(max_key)) = (self.insn_maps.first_key_value(), self.insn_maps.last_key_value()) {
+            self.code_item_start = *min_key.0 << 4;
+            self.code_item_end = (*max_key.0 + 1) << 4;
         }
         self.parsed = true;
         self._debug_log("parse", t_start, Some(self.insn_maps.len()));
@@ -241,7 +238,10 @@ impl<'a> InsnLocator<'a> {
 
         for &off in offsets {
             let bucket = off >> 4;
-            let midx_option = insn_maps.get(&bucket);
+            // BTreeMap range query: find the nearest bucket ≤ target bucket.
+            // Since each method only inserts its first bucket, a later instruction
+            // offset maps to the method's first bucket via this range query.
+            let midx_option = insn_maps.range(..=bucket).next_back().map(|(_, v)| v);
 
             match midx_option {
                 Some(midxs) if !midxs.is_empty() => {
