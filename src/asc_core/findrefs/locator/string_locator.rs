@@ -5,6 +5,7 @@
 
 use crate::asc_core::findrefs::locator::base_locator::{_debug_log, BaseLocator};
 use crate::asc_core::utils::tinydex::DEX;
+use regex::bytes::Regex;
 use std::collections::HashSet;
 use std::time::Instant;
 
@@ -71,7 +72,7 @@ impl<'a> StringLocator<'a> {
         let strdata_end = self.strdata_end as usize;
         let submem = &buf[strdata_start..strdata_end];
 
-        let pattern = regex::bytes::Regex::new(string).unwrap();
+        let pattern = Regex::new(string).unwrap();
         let mut results = Vec::new();
 
         for match_ in pattern.find_iter(submem) {
