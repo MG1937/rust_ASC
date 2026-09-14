@@ -3,9 +3,15 @@ name = "rust_ASC"
 version = "0.1.0"
 edition = "2024"
 
+[profile.release]
+opt-level = 3           # max speed
+lto = "fat"             # full link-time optimization
+codegen-units = 1       # single compilation unit, more inlining
+strip = "symbols"       # remove debug symbols
+panic = "abort"         # smaller binary, no unwind tables
+
 [dependencies]
 zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
 regex = "1"
 lazy_static = "1"
-serde_json = "1"
