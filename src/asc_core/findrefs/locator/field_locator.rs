@@ -1,0 +1,221 @@
+// Auth: MG1937
+
+use crate::asc_core::findrefs::locator::base_locator::{_debug_log, BaseLocator};
+use crate::asc_core::findrefs::locator::string_locator::StringLocator;
+use crate::asc_core::findrefs::locator::type_locator::TypeLocator;
+use crate::asc_core::utils::tinydex::DEX;
+use std::collections::{HashMap, HashSet};
+use std::time::Instant;
+
+struct _STRUCT_HHI;
+impl _STRUCT_HHI {
+    fn unpack_from(buf: &[u8], off: usize) -> (u16, u16, u32) {
+        (
+            u16::from_le_bytes([buf[off], buf[off+1]]),
+            u16::from_le_bytes([buf[off+2], buf[off+3]]),
+            u32::from_le_bytes([buf[off+4], buf[off+5], buf[off+6], buf[off+7]]),
+        )
+    }
+}
+
+struct _STRUCT_I;
+impl _STRUCT_I {
+    fn unpack_from(buf: &[u8], off: usize) -> u32 {
+        u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]])
+    }
+}
+
+#[derive(Clone)]
+pub struct FieldFind {
+    pub class: Option<(String, bool)>, // (clz, precise)
+    pub field: Option<String>,
+}
+
+impl FieldFind {
+    pub fn new(class: Option<(String, bool)>, field: Option<String>) -> Self {
+        FieldFind { class, field }
+    }
+}
+
+pub struct FieldLocator<'a> {
+    pub base: BaseLocator<'a>,
+    pub parsed: bool,
+    pub clz_maps: HashMap<u32, HashSet<u32>>, // {type_idx : {field_idx, ...}}
+    pub field_maps: HashMap<u32, HashSet<u32>>, // {name_idx : {field_idx, ...}}
+}
+
+impl<'a> FieldLocator<'a> {
+    pub fn new(dex: &'a DEX) -> Self {
+        FieldLocator {
+            base: BaseLocator::new(dex),
+            parsed: false,
+            clz_maps: HashMap::new(),
+            field_maps: HashMap::new(),
+        }
+    }
+
+    pub fn set_debug(&mut self, debug: bool) {
+        self.base.set_debug(debug);
+    }
+
+    pub fn _debug_log(&self, stage: &str, t_start: Option<Instant>, count: Option<usize>) {
+        _debug_log("FieldLocator", stage, t_start, count, self.base.debug);
+    }
+
+    // table build is very fast, dont worry about performance
+    pub fn _build_map(&mut self) {
+        if self.parsed {
+            return;
+        }
+        let t_start = if self.base.debug { Some(Instant::now()) } else { None };
+        let (field_ids_off, field_ids_size) = self.base.dex.header.fields;
+        let mut field_ids_off = field_ids_off as usize;
+        let clz_maps = &mut self.clz_maps;
+        let field_maps = &mut self.field_maps;
+        let buf = self.base.buf;
+
+        for field_idx in 0..field_ids_size {
+            let (class_idx, _type_idx, name_idx) = _STRUCT_HHI::unpack_from(buf, field_ids_off);
+            field_ids_off += 8;
+            clz_maps.entry(class_idx as u32).or_insert_with(HashSet::new).insert(field_idx);
+            field_maps.entry(name_idx).or_insert_with(HashSet::new).insert(field_idx);
+        }
+        self.parsed = true;
+        self._debug_log("build_map", t_start, Some(field_ids_size as usize));
+    }
+
+    // which is different with type locator, this func for precise clz name
+    // while type locator is for fuzzy search
+    pub fn _find_type_idx_precisely(&self, clz: &str) -> i32 {
+        let mut left: i32 = 0;
+        let (type_ids_off, type_ids_size) = self.base.dex.header.types;
+        let mut right = type_ids_size as i32 - 1;
+        let buf = self.base.buf;
+
+        while left <= right {
+            let mid = (left + right) >> 1;
+            let desc_idx = _STRUCT_I::unpack_from(buf, (type_ids_off as usize) + ((mid as usize) << 2)) as usize;
+            let desc = &self.base.dex.get_string(desc_idx).value;
+            if desc == clz {
+                return mid;
+            }
+            if desc.as_str() < clz {
+                left = mid + 1;
+            } else {
+                right = mid - 1;
+            }
+        }
+        -1
+    }
+
+    pub fn _collect_clz_fids(&self, type_idxs: &HashSet<u32>) -> HashSet<u32> {
+        let mut ret = HashSet::new();
+        let clz_maps = &self.clz_maps;
+        for &type_idx in type_idxs {
+            if let Some(fids) = clz_maps.get(&type_idx) {
+                ret.extend(fids);
+            }
+        }
+        ret
+    }
+
+    pub fn _match_clz_fids(&self, clz_fids: &HashSet<u32>, field: &str) -> HashSet<u32> {
+        let mut ret = HashSet::new();
+        for &fid in clz_fids {
+            let f = self.base.dex.get_field(fid);
+            if f.name().contains(field) {
+                ret.insert(fid);
+            }
+        }
+        ret
+    }
+
+    // find struct: {"class" : ["None|clz", precise], "field" : "None|fuzzy_field"}
+    // the two values cannot both be None
+    // if class not None, input clz must be precise dalvik format value or fuzzy clz
+    // if field not None, input field name can be a fuzzy value
+    // if class is None, find out all field idx that contains the fuzzy field name while dont give shit about class
+    // if class is set, find out all fields below this class which matches the field condition
+    pub fn locate(&self, find: &FieldFind, str_locator: &StringLocator, type_locator: &TypeLocator) -> HashSet<u32> {
+        let t_start = if self.base.debug { Some(Instant::now()) } else { None };
+
+        let mut clz = find.class.as_ref();
+        let field = find.field.as_ref();
+        let mut clz_precise = true;
+        if let Some((clz_str, precise)) = clz {
+            if clz_str.is_empty() {
+                clz = None;
+            } else {
+                clz_precise = *precise;
+            }
+        }
+        let field = if field.map_or(false, |s| s.is_empty()) { None } else { field };
+        if clz.is_none() && field.is_none() {
+            self._debug_log("locate", t_start, Some(0));
+            return HashSet::new();
+        }
+
+        if clz.is_none() {
+            let name_idxs = str_locator.locate(field.unwrap());
+            let field_maps = &self.field_maps;
+            let mut ret = HashSet::new();
+            for name_idx in name_idxs {
+                if let Some(fids) = field_maps.get(&name_idx) {
+                    ret.extend(fids);
+                }
+            }
+            self._debug_log("locate", t_start, Some(ret.len()));
+            return ret;
+        }
+
+        let (clz_str, _) = clz.unwrap();
+        if clz_precise {
+            let type_idx = self._find_type_idx_precisely(clz_str);
+            if type_idx == -1 {
+                self._debug_log("locate", t_start, Some(0));
+                return HashSet::new();
+            }
+            let clz_fids = self.clz_maps.get(&(type_idx as u32));
+            match clz_fids {
+                None => {
+                    self._debug_log("locate", t_start, Some(0));
+                    return HashSet::new();
+                }
+                Some(fids) => {
+                    let clz_fids_set: HashSet<u32> = fids.iter().cloned().collect();
+                    if field.is_none() {
+                        self._debug_log("locate", t_start, Some(clz_fids_set.len()));
+                        return clz_fids_set;
+                    }
+                    let ret = self._match_clz_fids(&clz_fids_set, field.unwrap());
+                    self._debug_log("locate", t_start, Some(ret.len()));
+                    return ret;
+                }
+            }
+        } else {
+            let clz_fids = self._collect_clz_fids(&type_locator.locate(clz_str, str_locator));
+            if clz_fids.is_empty() {
+                self._debug_log("locate", t_start, Some(0));
+                return HashSet::new();
+            }
+            if field.is_none() {
+                self._debug_log("locate", t_start, Some(clz_fids.len()));
+                return clz_fids;
+            }
+            // fuzzy class + fuzzy field
+            let name_idxs = str_locator.locate(field.unwrap());
+            let mut ret = HashSet::new();
+            for name_idx in name_idxs {
+                if let Some(fids) = self.field_maps.get(&name_idx) {
+                    for fid in fids {
+                        if clz_fids.contains(fid) {
+                            ret.insert(*fid);
+                        }
+                    }
+                }
+            }
+            self._debug_log("locate", t_start, Some(ret.len()));
+            return ret;
+        }
+    }
+}

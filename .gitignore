@@ -1,0 +1,7 @@
+/target
+
+# test artifacts
+output*.txt
+rust_output.txt
+target/
+
