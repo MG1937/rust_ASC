@@ -569,7 +569,7 @@ impl ApkHandler {
         // Shared index counter for work stealing
         let work_queue = Arc::new(Mutex::new(0usize));
 
-        let results = Arc::new(Mutex::new(Vec::<(String, Vec<String>)>::new()));
+        let results = Arc::new(Mutex::new(Vec::<(String, Vec<String>, f64, f64)>::new()));
         let find = Arc::new((*find).clone());
 
         let num_workers = std::cmp::min(num_entries, self.max_workers);
@@ -603,7 +603,7 @@ impl ApkHandler {
                     );
                     if !lines.is_empty() {
                         let mut res = results.lock().unwrap();
-                        res.push((name, lines));
+                        res.push((name, lines, _inflate_us, _process_us));
                     }
                 }
             }));
@@ -619,6 +619,12 @@ impl ApkHandler {
         final_results.sort_by(|a, b| a.0.cmp(&b.0));
 
         if self.debug {
+            for (dex_name, _lines, inflate_us, process_us) in &final_results {
+                self._log(&format!(
+                    "[APK] '{}' inflate={:.2} us process={:.2} us",
+                    dex_name, inflate_us, process_us
+                ));
+            }
             let t_end = Instant::now();
             self._log(&format!(
                 "[APK] for_each_findrefs total={:.2} us count={} workers={}",
@@ -629,5 +635,8 @@ impl ApkHandler {
         }
 
         final_results
+            .into_iter()
+            .map(|(dex_name, lines, _inflate_us, _process_us)| (dex_name, lines))
+            .collect()
     }
 }
