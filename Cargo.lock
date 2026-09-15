@@ -307,6 +307,7 @@ dependencies = [
  "apk-info-axml",
  "flate2",
  "lazy_static",
+ "memchr",
  "memmap2",
  "quick-xml",
  "regex",
