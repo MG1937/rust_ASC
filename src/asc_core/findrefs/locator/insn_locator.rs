@@ -4,7 +4,7 @@ use crate::asc_core::findrefs::locator::base_locator::{_debug_log, BaseLocator};
 use crate::asc_core::models::dvm_opcode::opcodes;
 use crate::asc_core::utils::leb128::{read_uleb128_fast, read_uleb128_len};
 use crate::asc_core::utils::tinydex::DEX;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::time::Instant;
 
 struct _STRUCT_I;
@@ -62,12 +62,13 @@ pub struct InsnLocator<'a> {
     pub base: BaseLocator<'a>,
     pub parsed: bool,
     // use 16 bytes dense table to achieve O(1) speed
-    pub insn_maps: BTreeMap<u32, Vec<u32>>, // {insn_off_bucket: [midx, midx2...]}
+    pub insn_maps: Vec<(u32, Vec<u32>)>, // {insn_off_bucket: [midx, midx2...]}
+    pub insn_maps_build: HashMap<u32, Vec<u32>>,
     pub code_item_start: u32, // fuzzy offset around 16 bytes
     pub code_item_end: u32, // fuzzy too
 
     // for insn verify... bugfix for insn mismatch 20260728
-    pub method_bounds: BTreeMap<u32, u32>, // {midx: insn_off_start}
+    pub method_bounds: HashMap<u32, u32>, // {midx: insn_off_start}
 }
 
 impl<'a> InsnLocator<'a> {
@@ -75,10 +76,11 @@ impl<'a> InsnLocator<'a> {
         let mut locator = InsnLocator {
             base: BaseLocator::new(dex),
             parsed: false,
-            insn_maps: BTreeMap::new(),
+            insn_maps: Vec::new(),
+            insn_maps_build: HashMap::new(),
             code_item_start: 0,
             code_item_end: 0,
-            method_bounds: BTreeMap::new(),
+            method_bounds: HashMap::new(),
         };
         locator
     }
@@ -98,27 +100,27 @@ impl<'a> InsnLocator<'a> {
         }
         let insn_size = _STRUCT_I::unpack_from(data, pos as usize + 12);
         let insn_off = pos + 16;
-        let insn_maps = &mut self.insn_maps;
+        let insn_maps = &mut self.insn_maps_build;
         // need to declare why do this... checkout the diagram in file head
         let insn_bucket_start = insn_off >> 4;
 
         self.method_bounds.insert(midx, insn_off);
 
         // R8 insn deduplicate machenism, different method may refer to same insn body
-        let bucket_entry = insn_maps.get(&insn_bucket_start).cloned();
-        let resolved_midxs = match bucket_entry {
-            Some(old) => {
-                let mut v = vec![midx];
-                v.extend(old);
-                v
-            }
-            None => vec![midx],
-        };
-
         // Only fill the first bucket. locate() uses BTreeMap::range(..=bucket)
         // to find the nearest lower bucket, then verifies with insn_verify().
         // This avoids the O(N) per-method bucket fill loop.
-        insn_maps.insert(insn_bucket_start, resolved_midxs);
+        match insn_maps.get_mut(&insn_bucket_start) {
+            Some(old) => {
+                let mut resolved_midxs = Vec::with_capacity(old.len() + 1);
+                resolved_midxs.push(midx);
+                resolved_midxs.extend_from_slice(old);
+                *old = resolved_midxs;
+            }
+            None => {
+                insn_maps.insert(insn_bucket_start, vec![midx]);
+            }
+        }
     }
 
     // return next class data item pos
@@ -216,9 +218,11 @@ impl<'a> InsnLocator<'a> {
         }
         let t_start = if self.base.debug { Some(Instant::now()) } else { None };
         self._build_map_bymap();
-        if let (Some(min_key), Some(max_key)) = (self.insn_maps.first_key_value(), self.insn_maps.last_key_value()) {
-            self.code_item_start = *min_key.0 << 4;
-            self.code_item_end = (*max_key.0 + 1) << 4;
+        self.insn_maps = std::mem::take(&mut self.insn_maps_build).into_iter().collect();
+        self.insn_maps.sort_unstable_by_key(|(bucket, _)| *bucket);
+        if let (Some(min_key), Some(max_key)) = (self.insn_maps.first(), self.insn_maps.last()) {
+            self.code_item_start = min_key.0 << 4;
+            self.code_item_end = (max_key.0 + 1) << 4;
         }
         self.parsed = true;
         self._debug_log("parse", t_start, Some(self.insn_maps.len()));
@@ -241,7 +245,8 @@ impl<'a> InsnLocator<'a> {
             // BTreeMap range query: find the nearest bucket ≤ target bucket.
             // Since each method only inserts its first bucket, a later instruction
             // offset maps to the method's first bucket via this range query.
-            let midx_option = insn_maps.range(..=bucket).next_back().map(|(_, v)| v);
+            let index = insn_maps.partition_point(|(key, _)| *key <= bucket);
+            let midx_option = index.checked_sub(1).map(|idx| &insn_maps[idx].1);
 
             match midx_option {
                 Some(midxs) if !midxs.is_empty() => {
