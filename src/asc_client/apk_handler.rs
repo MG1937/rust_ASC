@@ -12,6 +12,7 @@ use std::thread;
 use std::time::Instant;
 
 use flate2::read::DeflateDecoder;
+use memmap2::{Mmap, MmapOptions};
 
 use crate::asc_client::asc_handler::AscHandler;
 use crate::asc_core::findrefs::findrefs_manager::FindRefInput;
@@ -425,13 +426,14 @@ impl ApkHandler {
         }
     }
 
-    fn _read_apk(&self) -> Result<Vec<u8>, String> {
-        let mut fp = File::open(&self.apk_path)
+    fn _read_apk(&self) -> Result<Mmap, String> {
+        let fp = File::open(&self.apk_path)
             .map_err(|e| format!("cannot open APK: {}", e))?;
-        let mut buf = Vec::new();
-        fp.read_to_end(&mut buf)
-            .map_err(|e| format!("cannot read APK: {}", e))?;
-        Ok(buf)
+        unsafe {
+            MmapOptions::new()
+                .map(&fp)
+                .map_err(|e| format!("cannot memory-map APK: {}", e))
+        }
     }
 
     /// 在APK的所有DEX中搜索指定类，返回找到的DEX名称和数据
