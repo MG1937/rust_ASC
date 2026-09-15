@@ -2,6 +2,8 @@
 
 // https://source.android.com/docs/core/runtime/instruction-formats
 
+use std::any::Any;
+
 use crate::asc_core::models::dvm_opcode;
 use crate::asc_core::models::dvm_opcode::DvmOpcode;
 
@@ -11,6 +13,7 @@ pub trait DvmHandler {
     // basic handler trait
     fn should_break(&self) -> bool;
     fn call(&mut self, bvmopcode: &DvmOpcode, pc: usize, result: Option<u32>) -> Option<u32>;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 pub struct DvmInterpreter {
@@ -25,6 +28,12 @@ impl DvmInterpreter {
 
     pub fn addHandler(&mut self, handler: Box<dyn DvmHandler>) {
         self.handlers.push(handler);
+    }
+
+    pub fn getHandler_mut<T: Any>(&mut self) -> Option<&mut T> {
+        self.handlers.iter_mut().find_map(|handler| {
+            handler.as_any_mut().downcast_mut::<T>()
+        })
     }
 
     pub fn interpret(&mut self, bytecode: &mut Vec<u8>) {

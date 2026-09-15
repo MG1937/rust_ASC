@@ -36,8 +36,6 @@ fn read_class_data_from_raw(
     }
 
     use crate::asc_core::utils::leb128::read_uleb128_fast;
-    use crate::asc_core::utils::leb128::read_uleb128_len;
-
     let mut p = class_data_off;
 
     let (s_f_cnt, c) = read_uleb128_fast(raw, p); p += c;
@@ -335,8 +333,13 @@ impl<'a, 'b> DexBuilder<'a, 'b> {
                 bc.clone()
             } else if let Some(&code_off) = method_code_offs.get(&method_idx) {
                 if code_off > 0 {
-                    let off = ((code_off as usize + 3) & !3); // align to 4
-                    let insns_size = u16::from_le_bytes([raw[off + 12], raw[off + 13]]) as usize;
+                    let off = (code_off as usize + 3) & !3; // align to 4
+                    let insns_size = u32::from_le_bytes([
+                        raw[off + 12],
+                        raw[off + 13],
+                        raw[off + 14],
+                        raw[off + 15],
+                    ]) as usize;
                     let insns_start = off + 16;
                     raw[insns_start..insns_start + insns_size * 2].to_vec()
                 } else {
@@ -351,7 +354,10 @@ impl<'a, 'b> DexBuilder<'a, 'b> {
                 .map(|(d, c)| (*d, c.as_ref()))
                 .unwrap_or((0, None));
 
-            self.out.extend(orig_header);
+            let mut new_header = orig_header.clone();
+            new_header[8..12].copy_from_slice(&debug_info_off.to_le_bytes());
+            new_header[12..16].copy_from_slice(&(insns_size as u32).to_le_bytes());
+            self.out.extend(&new_header);
             self.out.extend(&bc);
 
             if tries_size > 0 {
@@ -412,7 +418,21 @@ impl<'a, 'b> DexBuilder<'a, 'b> {
                 .collect();
             let raw_class_data_off = clz_def_data[6] as usize;
 
-            let (raw_s_f, raw_i_f, raw_d_m, raw_v_m) = read_class_data_from_raw(self.hlw._raw_cache, raw_class_data_off);
+            let (mut raw_s_f, mut raw_i_f, mut raw_d_m, mut raw_v_m) =
+                read_class_data_from_raw(self.hlw._raw_cache, raw_class_data_off);
+
+            raw_s_f.sort_by_key(|(f_idx, _)| {
+                self.im.field_restruct_idx.get(f_idx).copied().unwrap_or(u32::MAX)
+            });
+            raw_i_f.sort_by_key(|(f_idx, _)| {
+                self.im.field_restruct_idx.get(f_idx).copied().unwrap_or(u32::MAX)
+            });
+            raw_d_m.sort_by_key(|(m_idx, _, _)| {
+                self.im.method_restruct_idx.get(m_idx).copied().unwrap_or(u32::MAX)
+            });
+            raw_v_m.sort_by_key(|(m_idx, _, _)| {
+                self.im.method_restruct_idx.get(m_idx).copied().unwrap_or(u32::MAX)
+            });
 
             class_data_off = self.out.len() as u32;
 
@@ -426,8 +446,10 @@ impl<'a, 'b> DexBuilder<'a, 'b> {
             {
                 let mut last_idx: u32 = 0;
                 for &(f_idx, acc) in &raw_s_f {
-                    let new_idx = self.im.field_restruct_idx.get(&f_idx).copied().unwrap_or(0);
-                    self.out.extend(write_uleb128((new_idx - last_idx) as u64));
+                    let new_idx = self.im.field_restruct_idx[&f_idx];
+                    let idx_diff = new_idx.checked_sub(last_idx)
+                        .expect("static field indices are not sorted");
+                    self.out.extend(write_uleb128(idx_diff as u64));
                     last_idx = new_idx;
                     self.out.extend(write_uleb128(acc as u64));
                 }
@@ -437,8 +459,10 @@ impl<'a, 'b> DexBuilder<'a, 'b> {
             {
                 let mut last_idx: u32 = 0;
                 for &(f_idx, acc) in &raw_i_f {
-                    let new_idx = self.im.field_restruct_idx.get(&f_idx).copied().unwrap_or(0);
-                    self.out.extend(write_uleb128((new_idx - last_idx) as u64));
+                    let new_idx = self.im.field_restruct_idx[&f_idx];
+                    let idx_diff = new_idx.checked_sub(last_idx)
+                        .expect("instance field indices are not sorted");
+                    self.out.extend(write_uleb128(idx_diff as u64));
                     last_idx = new_idx;
                     self.out.extend(write_uleb128(acc as u64));
                 }
@@ -448,8 +472,10 @@ impl<'a, 'b> DexBuilder<'a, 'b> {
             {
                 let mut last_idx: u32 = 0;
                 for &(m_idx, acc, _) in &raw_d_m {
-                    let new_idx = self.im.method_restruct_idx.get(&m_idx).copied().unwrap_or(0);
-                    self.out.extend(write_uleb128((new_idx - last_idx) as u64));
+                    let new_idx = self.im.method_restruct_idx[&m_idx];
+                    let idx_diff = new_idx.checked_sub(last_idx)
+                        .expect("direct method indices are not sorted");
+                    self.out.extend(write_uleb128(idx_diff as u64));
                     last_idx = new_idx;
                     self.out.extend(write_uleb128(acc as u64));
                     let c_off = code_item_offs.get(&m_idx).copied().unwrap_or(0);
@@ -461,8 +487,10 @@ impl<'a, 'b> DexBuilder<'a, 'b> {
             {
                 let mut last_idx: u32 = 0;
                 for &(m_idx, acc, _) in &raw_v_m {
-                    let new_idx = self.im.method_restruct_idx.get(&m_idx).copied().unwrap_or(0);
-                    self.out.extend(write_uleb128((new_idx - last_idx) as u64));
+                    let new_idx = self.im.method_restruct_idx[&m_idx];
+                    let idx_diff = new_idx.checked_sub(last_idx)
+                        .expect("virtual method indices are not sorted");
+                    self.out.extend(write_uleb128(idx_diff as u64));
                     last_idx = new_idx;
                     self.out.extend(write_uleb128(acc as u64));
                     let c_off = code_item_offs.get(&m_idx).copied().unwrap_or(0);

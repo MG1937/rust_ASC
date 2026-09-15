@@ -180,6 +180,7 @@ impl fmt::Display for DexString {
     }
 }
 
+#[derive(Clone)]
 pub struct DexPrototype {
     pub shorty_idx: u32,
     pub return_type_idx: u32,
@@ -211,6 +212,7 @@ impl DexPrototype {
     }
 }
 
+#[derive(Clone)]
 pub struct DexField {
     pub index: u32,
     pub class_idx: u32,
@@ -256,6 +258,7 @@ pub struct FieldClass {
     pub fullname: String,
 }
 
+#[derive(Clone)]
 pub struct DexMethod {
     pub index: u32,
     pub class_idx: u32,
@@ -483,23 +486,21 @@ impl DEX {
     pub fn get_prototype(&self, proto_idx: u32) -> DexPrototype {
         let mut cache = self.prototypes_cache.borrow_mut();
         if let Some(p) = cache.get(&proto_idx) {
-            // can't clone DexPrototype easily due to raw pointer
-            // recreate
+            return p.clone();
         }
         let p = DexPrototype::new(self, proto_idx);
-        cache.insert(proto_idx, p);
-        // return a fresh one - simplified
-        DexPrototype::new(self, proto_idx)
+        cache.insert(proto_idx, p.clone());
+        p
     }
 
     pub fn get_method(&self, method_idx: u32) -> DexMethod {
         let mut cache = self.methods_cache.borrow_mut();
         if let Some(m) = cache.get(&method_idx) {
-            // can't clone
+            return m.clone();
         }
         let m = DexMethod::new(self, method_idx);
-        cache.insert(method_idx, m);
-        DexMethod::new(self, method_idx)
+        cache.insert(method_idx, m.clone());
+        m
     }
 
     pub fn get_method_mut<'a>(&'a self, method_idx: u32) -> &'a mut DexMethod {
@@ -515,11 +516,11 @@ impl DEX {
     pub fn get_field(&self, field_idx: u32) -> DexField {
         let mut cache = self.fields_cache.borrow_mut();
         if let Some(f) = cache.get(&field_idx) {
-            // can't clone
+            return f.clone();
         }
         let f = DexField::new(self, field_idx);
-        cache.insert(field_idx, f);
-        DexField::new(self, field_idx)
+        cache.insert(field_idx, f.clone());
+        f
     }
 
     pub fn get_field_mut<'a>(&'a self, field_idx: u32) -> &'a mut DexField {

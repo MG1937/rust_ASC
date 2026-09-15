@@ -61,6 +61,17 @@ impl IndexHandler {
         &self.mapper
     }
 
+    pub fn preregister_own_fields(&mut self, fields: &[u32]) {
+        // Pin this class's own declared fields to the leading new field
+        // indices, ordered by original field_idx ascending.
+        //
+        // 20260912
+        // so we need to pin our own class's fields before bytecode remap
+        for &field_idx in fields {
+            self.mapIndex(field_idx, "FIELD");
+        }
+    }
+
     pub fn setBytecode(&mut self, bytecode: Vec<u8>) {
         self.bytecode = bytecode;
         self.pc_bound = 0xffff;
@@ -116,5 +127,9 @@ impl DvmHandler for IndexHandler {
         }
 
         Some(new_idx)
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }

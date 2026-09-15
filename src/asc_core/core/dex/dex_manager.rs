@@ -14,17 +14,6 @@ use crate::asc_core::core::dex::dex_builder::DexBuilder;
 // Auth: MG1937
 // this part gen by LLM, I already build the infra, let LLM arrange this
 
-/// Read method bytecode directly from raw DEX buffer at the given method's code_off
-fn read_method_bytecode_raw(raw: &[u8], code_off: u32) -> Vec<u8> {
-    if code_off == 0 {
-        return Vec::new();
-    }
-    let off = code_off as usize;
-    let insns_size = u16::from_le_bytes([raw[off + 12], raw[off + 13]]) as usize;
-    let insns_start = off + 16;
-    raw[insns_start..insns_start + insns_size * 2].to_vec()
-}
-
 pub struct DexManager {
     pub dex_path: Option<String>,
     pub dex_name: String,
@@ -98,8 +87,15 @@ impl DexManager {
         let mut clazz = dex_ref.get_class(dalvik_class_fmt)
             .expect(&format!("Class {} not found in DEX.", dalvik_class_fmt));
 
-        let mut idx_handler = IndexHandler::new();
         let method_indices: Vec<u32> = clazz.methods();
+        let field_indices: Vec<u32> = clazz.fields();
+
+        let mut dvminterp = DvmInterpreter::new();
+        dvminterp.addHandler(Box::new(IndexHandler::new()));
+        dvminterp
+            .getHandler_mut::<IndexHandler>()
+            .expect("IndexHandler is not registered")
+            .preregister_own_fields(&field_indices);
 
         let mut modified_bytecodes: HashMap<u32, Vec<u8>> = HashMap::new();
 
@@ -108,13 +104,21 @@ impl DexManager {
         // 1. Execute interpreter to collect indices (optional modification step)
         let t_interp_start = Instant::now();
         for &method_idx in &method_indices {
-            // Read bytecode from raw DEX
             let method = dex_ref.get_method(method_idx);
-            let code_off = method._code_off;
-            let bytecode_raw = read_method_bytecode_raw(&self.dexraw, code_off);
-
-            let mut bc = bytecode_raw.clone();
-            modified_bytecodes.insert(method_idx, bc);
+            let mut bytecode_raw = method.bytecode();
+            {
+                let idx_handler = dvminterp
+                    .getHandler_mut::<IndexHandler>()
+                    .expect("IndexHandler is not registered");
+                idx_handler.setBytecode(bytecode_raw.clone());
+            }
+            dvminterp.interpret(&mut bytecode_raw);
+            let bytecode = dvminterp
+                .getHandler_mut::<IndexHandler>()
+                .expect("IndexHandler is not registered")
+                .bytecode
+                .clone();
+            modified_bytecodes.insert(method_idx, bytecode);
         }
         let t_interp_end = Instant::now();
 
@@ -124,7 +128,11 @@ impl DexManager {
         let t_hollow_end = Instant::now();
 
         // 3. Remap indices to create new continuous index tables
-        let mapper = idx_handler.getMapper().clone();
+        let mapper = dvminterp
+            .getHandler_mut::<IndexHandler>()
+            .expect("IndexHandler is not registered")
+            .getMapper()
+            .clone();
         let mut indexmapper = DexIndexMapper::new(mapper, dex_ref, &self.dexraw);
         indexmapper.set_class(&mut clazz);
 
