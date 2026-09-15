@@ -72,11 +72,11 @@ impl AscHandler {
 
         let matched_idxs: Vec<usize> = out.mark_idx.iter().map(|&x| x as usize).collect();
 
-        let mids: Vec<usize> = match find_type {
-            "string" => out.string.iter().map(|&x| x as usize).collect(),
-            "type" => out.type_.iter().map(|&x| x as usize).collect(),
-            "method" => out.method.iter().map(|&x| x as usize).collect(),
-            "field" => out.field.iter().map(|&x| x as usize).collect(),
+        let mids: &Vec<Option<Vec<u32>>> = match find_type {
+            "string" => &out.string,
+            "type" => &out.type_,
+            "method" => &out.method,
+            "field" => &out.field,
             _ => return Vec::new(),
         };
 
@@ -86,24 +86,30 @@ impl AscHandler {
 
         if !aggregate {
             let mut ret = Vec::new();
-            for (i, &mid) in mids.iter().enumerate() {
+            for (i, mid_entry) in mids.iter().enumerate() {
                 let idx = matched_idxs.get(i).copied().unwrap_or(0);
                 let matched = self._format_matched_name(&dex, find_type, idx);
-                ret.push(format!(
-                    "{} | {} | matched=({})",
-                    dex_name,
-                    self._format_method(&dex, mid),
-                    matched
-                ));
+                let Some(mid_list) = mid_entry else { continue; };
+                for &mid in mid_list {
+                    ret.push(format!(
+                        "{} | {} | matched=({})",
+                        dex_name,
+                        self._format_method(&dex, mid as usize),
+                        matched
+                    ));
+                }
             }
             return ret;
         }
 
         // aggregate = true
         let mut grouped: HashMap<usize, HashSet<usize>> = HashMap::new();
-        for (i, &mid) in mids.iter().enumerate() {
+        for (i, mid_entry) in mids.iter().enumerate() {
             let idx = matched_idxs.get(i).copied().unwrap_or(0);
-            grouped.entry(mid).or_default().insert(idx);
+            let Some(mid_list) = mid_entry else { continue; };
+            for &mid in mid_list {
+                grouped.entry(mid as usize).or_default().insert(idx);
+            }
         }
 
         let mut ret = Vec::new();

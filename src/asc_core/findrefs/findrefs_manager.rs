@@ -33,10 +33,10 @@ impl FindRefInput {
 }
 
 pub struct FindRefOutput {
-    pub string: Vec<u32>,
-    pub type_: Vec<u32>,
-    pub method: Vec<u32>,
-    pub field: Vec<u32>,
+    pub string: Vec<Option<Vec<u32>>>,
+    pub type_: Vec<Option<Vec<u32>>>,
+    pub method: Vec<Option<Vec<u32>>>,
+    pub field: Vec<Option<Vec<u32>>>,
     pub mark_idx: Vec<u32>,
 }
 
@@ -210,30 +210,28 @@ impl<'a> FindRefManager<'a> {
         let insn_locator = self._ensure_insn_locator();
         let mut scanner = CodeItemScanner::new(insn_locator);
 
-        let mut scan_map: HashMap<String, Vec<u32>> = HashMap::new();
+        let mut scan_map: HashMap<String, Vec<Option<Vec<u32>>>> = HashMap::new();
         if let Some(r) = string_result {
-            let v: Vec<u32> = r.into_iter().collect();
+            let v: Vec<Option<Vec<u32>>> = r.into_iter().map(|x| Some(vec![x])).collect();
             scan_map.insert("string".to_string(), v);
         }
         if let Some(r) = type_result {
-            let v: Vec<u32> = r.into_iter().collect();
+            let v: Vec<Option<Vec<u32>>> = r.into_iter().map(|x| Some(vec![x])).collect();
             scan_map.insert("type".to_string(), v);
         }
         if let Some(r) = method_result {
-            let v: Vec<u32> = r.into_iter().collect();
+            let v: Vec<Option<Vec<u32>>> = r.into_iter().map(|x| Some(vec![x])).collect();
             scan_map.insert("method".to_string(), v);
         }
         if let Some(r) = field_result {
-            let v: Vec<u32> = r.into_iter().collect();
+            let v: Vec<Option<Vec<u32>>> = r.into_iter().map(|x| Some(vec![x])).collect();
             scan_map.insert("field".to_string(), v);
         }
 
-        // Reborrow insn_locator for scan
-        let insn_locator2 = self._ensure_insn_locator();
-        scanner.scan(&mut scan_map, mark, insn_locator2);
+        scanner.scan(&mut scan_map, mark, insn_locator);
         let mark_idx = std::mem::take(&mut scanner.mark_idx);
 
-        let get_or_default = |key: &str| -> Vec<u32> {
+        let get_or_default = |key: &str| -> Vec<Option<Vec<u32>>> {
             scan_map.get(key).cloned().unwrap_or_default()
         };
 
