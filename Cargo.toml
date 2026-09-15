@@ -15,3 +15,5 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
 regex = "1"
 lazy_static = "1"
+apk-info-axml = "1.0.13"
+quick-xml = "0.36"
