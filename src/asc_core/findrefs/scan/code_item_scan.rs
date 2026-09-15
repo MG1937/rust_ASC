@@ -218,12 +218,17 @@ const _DENSE_OPCODE_COUNT: usize = 1;
 
 fn _mask_table(values: &[u8]) -> [u8; 256] {
     // 256 entry 0/1 table used by the dense scan below
-    let wanted: HashSet<u8> = values.iter().copied().collect();
     let mut table = [0u8; 256];
-    for b in 0..=255u8 {
-        if wanted.contains(&b) {
-            table[b as usize] = 1;
-        }
+    for &v in values {
+        table[v as usize] = 1;
+    }
+    table
+}
+
+fn _hi_mask(idxs: &HashSet<u32>) -> [u8; 256] {
+    let mut table = [0u8; 256];
+    for &idx in idxs {
+        table[((idx >> 8) & 0xff) as usize] = 1;
     }
     table
 }
@@ -251,36 +256,69 @@ impl<'a> CodeItemScanner<'a> {
         }
     }
 
-    // dense opcode classes: a bytes.translate per byte position plus a bigint AND
-    // replaces the regex charset scan. Only the opcode byte and the high idx byte are
-    // masked: the low idx byte class is nearly the whole byte range for a realistic
-    // target set, so masking it removed only a few thousand python iterations while
-    // costing two more full passes over the region (measured -5% to -22% without it).
+    // dense opcode classes: memchr pre-filter replaces the Python bytes.translate
+    // approach. For 1-4 opcode values, memchr uses SIMD internally. For larger sets
+    // (field=28, method=12, type=7) fall back to mask-table loop.
     // The exact idx check below still runs on every survivor.
-    fn _scan_code_item_dense(&self, opcode_values: &[u8], idxs: &HashSet<u32>, mark: bool, matched_offset: &mut Vec<u32>, mark_idx: &mut Vec<u32>) {
+    fn _scan_code_item_dense(&self, opcode_values: &[u8], idxs: &HashSet<u32>, idx_width: usize, mark: bool, matched_offset: &mut Vec<u32>, mark_idx: &mut Vec<u32>) {
         let off_start = self.off_start as usize;
         let raw = self.submem;
         let raw_len = raw.len();
+        if raw_len < 4 { return; }
 
-        let op_mask = _mask_table(opcode_values);
-        let hi_idxs: Vec<u8> = idxs.iter().map(|idx| ((idx >> 8) & 0xff) as u8).collect();
-        let hi_set: HashSet<u8> = hi_idxs.into_iter().collect();
-        let hi_mask = _mask_table(&hi_set.into_iter().collect::<Vec<_>>());
+        let check_idx = |start: usize| -> Option<u32> {
+            if start + 2 + idx_width > raw_len { return None; }
+            let idx = if idx_width == 2 {
+                u16::from_le_bytes([raw[start + 2], raw[start + 3]]) as u32
+            } else {
+                u32::from_le_bytes([raw[start + 2], raw[start + 3], raw[start + 4], raw[start + 5]])
+            };
+            if idxs.contains(&idx) { Some(idx) } else { None }
+        };
 
-        for start in 0..raw_len.saturating_sub(3) {
-            if op_mask[raw[start] as usize] == 0 {
-                continue;
+        match opcode_values.len() {
+            1 => {
+                let op = opcode_values[0];
+                for start in memchr::memchr_iter(op, raw) {
+                    if let Some(idx) = check_idx(start) {
+                        matched_offset.push((start + off_start) as u32);
+                        if mark { mark_idx.push(idx); }
+                    }
+                }
             }
-            if hi_mask[raw[start + 3] as usize] == 0 {
-                continue;
+            2 => {
+                let (a, b) = (opcode_values[0], opcode_values[1]);
+                for start in memchr::memchr2_iter(a, b, raw) {
+                    if let Some(idx) = check_idx(start) {
+                        matched_offset.push((start + off_start) as u32);
+                        if mark { mark_idx.push(idx); }
+                    }
+                }
             }
-            let idx = _STRUCT_H::unpack_from(raw, start + 2) as u32;
-            if !idxs.contains(&idx) {
-                continue;
+            3 => {
+                let (a, b, c) = (opcode_values[0], opcode_values[1], opcode_values[2]);
+                for start in memchr::memchr3_iter(a, b, c, raw) {
+                    if let Some(idx) = check_idx(start) {
+                        matched_offset.push((start + off_start) as u32);
+                        if mark { mark_idx.push(idx); }
+                    }
+                }
             }
-            matched_offset.push((start + off_start) as u32);
-            if mark {
-                mark_idx.push(idx);
+            _ => {
+                // >3 opcode values: mask-table loop, still use hi_mask pre-filter for speed
+                let op_mask = _mask_table(opcode_values);
+                for start in 0..raw_len.saturating_sub(3) {
+                    if op_mask[raw[start] as usize] == 0 { continue; }
+                    if start + 2 + idx_width > raw_len { continue; }
+                    let idx = if idx_width == 2 {
+                        u16::from_le_bytes([raw[start + 2], raw[start + 3]]) as u32
+                    } else {
+                        u32::from_le_bytes([raw[start + 2], raw[start + 3], raw[start + 4], raw[start + 5]])
+                    };
+                    if !idxs.contains(&idx) { continue; }
+                    matched_offset.push((start + off_start) as u32);
+                    if mark { mark_idx.push(idx); }
+                }
             }
         }
     }
@@ -295,9 +333,9 @@ impl<'a> CodeItemScanner<'a> {
 
         let groups = _idx_groups(idx_type);
         for &(opcode_values, idx_width) in groups {
-            if idx_width == 2 && opcode_values.len() >= _DENSE_OPCODE_COUNT {
+            if opcode_values.len() >= _DENSE_OPCODE_COUNT {
                 // Use opcode_values directly for dense scan instead of regex
-                self._scan_code_item_dense(opcode_values, idxs, mark, &mut matched_offset, &mut mark_idx);
+                self._scan_code_item_dense(opcode_values, idxs, idx_width, mark, &mut matched_offset, &mut mark_idx);
                 continue;
             }
             let pattern = _build_scan_pattern(&_byte_class(opcode_values), idx_width, idxs);
