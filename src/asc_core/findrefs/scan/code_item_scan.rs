@@ -165,17 +165,24 @@ impl<'a> CodeItemScanner<'a> {
             };
             let insn_offs = self._scan_code_item(&type_key, &idxs_set, mark);
             let mids = insn_locator.locate(&insn_offs);
-            // flatten locate result to Vec<u32>
+
+            // Python keeps scan[type_] and mark_idx aligned by instruction offset.
+            // One deduplicated instruction body can belong to multiple methods, so
+            // flatten the method list and duplicate the matching idx for every mid.
+            let offset_mark_idx = std::mem::take(&mut self.mark_idx);
             let mut flat_mids = Vec::new();
-            for entry in mids {
+            let mut flat_mark_idx = Vec::new();
+            for (offset_idx, entry) in mids.into_iter().enumerate() {
                 if let Some(mid_list) = entry {
                     for &mid in &mid_list {
-                        if !flat_mids.contains(&mid) {
-                            flat_mids.push(mid);
+                        flat_mids.push(mid);
+                        if mark {
+                            flat_mark_idx.push(offset_mark_idx[offset_idx]);
                         }
                     }
                 }
             }
+            self.mark_idx = flat_mark_idx;
             scan.insert(type_key, flat_mids);
         }
     }
