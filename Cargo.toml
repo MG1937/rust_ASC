@@ -12,7 +12,9 @@ panic = "abort"         # smaller binary, no unwind tables
 
 [dependencies]
 zip = { version = "2", default-features = false, features = ["deflate"] }
-flate2 = "1"
+# zlib-rs is flate2's faster pure-Rust DEFLATE backend. zip also enables
+# miniz_oxide, but flate2 gives zlib-rs priority when both are selected.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 memmap2 = "0.9"
 regex = "1"
 lazy_static = "1"
