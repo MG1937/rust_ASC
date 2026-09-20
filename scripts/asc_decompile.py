@@ -1,34 +1,71 @@
+#!/usr/bin/env python3
+"""Decompile a DEX class using androguard.
+
+Usage: asc_decompile.py <dex_path> <class_descriptor>
+
+Outputs Java source to stdout.
 """
-Helper script for rust_ASC getclass.
-Usage: py asc_decompile.py <dex_file> <dalvik_class>
-Reads a rebuilt DEX file and decompiles the target class using androguard DAD.
-"""
+
 import sys
 import os
+import struct
+import zlib
 
-# Add ASC source to path
-_script_dir = os.path.dirname(os.path.abspath(__file__))
-_asc_src = os.path.join(_script_dir, '..', '..', '..', 'Tools', 'ASC', 'src')
-if os.path.isdir(_asc_src):
-    sys.path.insert(0, _asc_src)
-else:
-    # Try env var or relative from cwd
-    asc_dir = os.environ.get('ASC_SRC')
-    if asc_dir:
-        sys.path.insert(0, asc_dir)
+def fix_dex_checksum(data: bytes) -> bytes:
+    """Recalculate and fix the Adler32 checksum at offset 8."""
+    if len(data) < 12:
+        return data
+    adler = zlib.adler32(data[12:]) & 0xffffffff
+    return data[:8] + struct.pack('<I', adler) + data[12:]
 
-from asc_core.utils.decompiler import decompile_dex_bytes
-
-if __name__ == '__main__':
+def main():
     if len(sys.argv) < 3:
-        print("Usage: py asc_decompile.py <dex_file> <dalvik_class>", file=sys.stderr)
+        print("Usage: asc_decompile.py <dex_path> <class_descriptor>", file=sys.stderr)
         sys.exit(1)
 
     dex_path = sys.argv[1]
-    dalvik_class = sys.argv[2]
+    class_descriptor = sys.argv[2]
+
+    if not os.path.exists(dex_path):
+        print(f"/* Error: DEX file not found: {dex_path} */")
+        sys.exit(1)
 
     with open(dex_path, 'rb') as f:
-        dex_bytes = bytearray(f.read())
+        raw = f.read()
+    raw = fix_dex_checksum(raw)
 
-    source = decompile_dex_bytes(dex_bytes, dalvik_class)
-    print(source, end='')
+    from androguard.core.dex import DEX
+    from androguard.core.analysis.analysis import Analysis
+    from androguard.decompiler.decompile import DvClass, DvMethod
+
+    vm = DEX(raw)
+    vmx = Analysis(vm)
+
+    class_def = vm.get_class(class_descriptor)
+    if class_def is None:
+        print(f"/* Error: Class {class_descriptor} not found */")
+        sys.exit(1)
+
+    # Create DvClass
+    dv = DvClass(class_def, vmx)
+
+    # Create DvMethod for each method in the class and decompile
+    raw_methods = class_def.get_methods()
+    decompiled_methods = []
+    for method in raw_methods:
+        method_analysis = vmx.get_method(method)
+        if method_analysis is None:
+            continue
+        dv_method = DvMethod(method_analysis)
+        if dv_method.method.get_code() is not None:
+            dv_method.process()
+        decompiled_methods.append(dv_method)
+
+    # Replace raw methods with DvMethod instances
+    dv.methods = decompiled_methods
+
+    source = dv.get_source()
+    print(source)
+
+if __name__ == "__main__":
+    main()
