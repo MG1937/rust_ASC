@@ -42,7 +42,7 @@ fn _format_xml(xml: &str, pretty: bool) -> Result<String, String> {
         .map_err(|e| format!("cannot format AndroidManifest.xml as UTF-8: {}", e))
 }
 
-/// 从APK中获取AndroidManifest.xml的文本表示
+/// Get text representation of AndroidManifest.xml from APK
 pub fn get_manifest_xml(apk_path: &str, pretty: bool) -> Result<String, String> {
     let fp = File::open(apk_path)
         .map_err(|e| format!("cannot open APK: {}", e))?;

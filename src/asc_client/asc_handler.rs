@@ -13,7 +13,7 @@ use crate::asc_core::utils::tinydex::DEX;
 
 // -----------------------------------------------------------------
 
-/// 核心编排器，整合DexManager、FindRefManager和decompiler
+/// Core orchestrator integrating DexManager, FindRefManager and decompiler
 pub struct AscHandler {
     pub debug: bool,
 }
@@ -23,9 +23,9 @@ impl AscHandler {
         AscHandler { debug }
     }
 
-    /// 提取并反编译指定类
+    /// Extract and decompile the specified class
     ///
-    /// NOTE: decompile_dex_bytes 依赖 androguard，Rust版本尚未实现。
+    /// NOTE: decompile_dex_bytes depends on androguard, Rust version not yet implemented.
     pub fn getclass(&self, dex_buf: &[u8], dalvik_class: &str) -> String {
         let mut manager = DexManager::from_bytes(dex_buf.to_vec(), self.debug);
         let new_dex_bytes = manager.extract_and_rebuild(dalvik_class);
@@ -53,7 +53,7 @@ impl AscHandler {
         }
     }
 
-    /// 查找引用，返回格式化的结果行列表
+    /// Find references and return formatted result lines
     pub fn findrefs(
         &self,
         dex_name: &str,

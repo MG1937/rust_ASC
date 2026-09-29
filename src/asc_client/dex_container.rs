@@ -8,12 +8,12 @@ fn _u32_from(buf: &[u8], off: usize) -> u32 {
     u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
 }
 
-/// 判断是否为DEX041容器
+/// Check whether data is a DEX041 container
 pub fn is_dex041_container(data: &[u8]) -> bool {
     data.len() >= _DEX_HEADER_MIN_SIZE && data[..8] == *_DEX041_MAGIC
 }
 
-/// 获取DEX041容器中所有逻辑DEX的偏移量
+/// Get offsets of all logical DEX entries in a DEX041 container
 pub fn dex041_logical_offsets(data: &[u8]) -> Vec<usize> {
     if !is_dex041_container(data) {
         return vec![0];
@@ -86,7 +86,7 @@ fn _patch_uleb128_in_place(buf: &mut [u8], off: usize, delta: u64) -> usize {
     size
 }
 
-/// 将DEX041容器中的逻辑DEX归一化（将header复制到文件开头）
+/// Normalize a logical DEX from a DEX041 container (copy header to file start)
 pub fn normalize_dex041_logical(data: &[u8], header_off: usize) -> Vec<u8> {
     if header_off == 0 {
         return data.to_vec();
@@ -184,7 +184,7 @@ fn _patch_code_item_debug_offsets(buf: &mut [u8], delta: u32) {
     }
 }
 
-/// 迭代DEX041容器中的所有逻辑DEX buffer
+/// Iterate all logical DEX buffers in a DEX041 container
 pub fn iter_logical_dex_buffers(name: &str, data: &[u8]) -> Vec<(String, Vec<u8>)> {
     let offsets = dex041_logical_offsets(data);
     if offsets.len() <= 1 {

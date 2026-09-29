@@ -436,7 +436,7 @@ impl ApkHandler {
         }
     }
 
-    /// 在APK的所有DEX中搜索指定类，返回找到的DEX名称和数据
+    /// Search for the specified class across all DEX files in the APK, return DEX name and data
     pub fn get_class_dex(&self, dalvik_class: &str) -> Option<(String, Vec<u8>)> {
         let target_bytes = dalvik_class.as_bytes();
         let t_start = Instant::now();
@@ -542,7 +542,7 @@ impl ApkHandler {
         result.clone()
     }
 
-    /// 在APK的所有DEX中并行查找引用，返回结果列表
+    /// Find references in parallel across all DEX files in the APK, return result list
     pub fn for_each_findrefs(
         &self,
         find_type: &str,
