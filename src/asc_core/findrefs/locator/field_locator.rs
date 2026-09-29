@@ -29,11 +29,24 @@ impl _STRUCT_I {
 pub struct FieldFind {
     pub class: Option<(String, bool)>, // (clz, precise)
     pub field: Option<String>,
+    pub field_precise: bool,
 }
 
 impl FieldFind {
     pub fn new(class: Option<(String, bool)>, field: Option<String>) -> Self {
-        FieldFind { class, field }
+        FieldFind {
+            class,
+            field,
+            field_precise: false,
+        }
+    }
+
+    pub fn new_exact(class: Option<(String, bool)>, field: Option<String>) -> Self {
+        FieldFind {
+            class,
+            field,
+            field_precise: true,
+        }
     }
 }
 
@@ -119,11 +132,21 @@ impl<'a> FieldLocator<'a> {
         ret
     }
 
-    pub fn _match_clz_fids(&self, clz_fids: &HashSet<u32>, field: &str) -> HashSet<u32> {
+    pub fn _match_clz_fids(
+        &self,
+        clz_fids: &HashSet<u32>,
+        field: &str,
+        precise: bool,
+    ) -> HashSet<u32> {
         let mut ret = HashSet::new();
         for &fid in clz_fids {
             let f = self.base.dex.get_field(fid);
-            if f.name().contains(field) {
+            let name = f.name();
+            if if precise {
+                name == field
+            } else {
+                name.contains(field)
+            } {
                 ret.insert(fid);
             }
         }
@@ -141,6 +164,7 @@ impl<'a> FieldLocator<'a> {
 
         let mut clz = find.class.as_ref();
         let field = find.field.as_ref();
+        let field_precise = find.field_precise;
         let mut clz_precise = true;
         if let Some((clz_str, precise)) = clz {
             if clz_str.is_empty() {
@@ -156,6 +180,15 @@ impl<'a> FieldLocator<'a> {
         }
 
         if clz.is_none() {
+            if field_precise {
+                let mut ret = HashSet::new();
+                for field_idx in 0..self.base.dex.header.fields.1 {
+                    if self.base.dex.get_field(field_idx).name() == field.unwrap().as_str() {
+                        ret.insert(field_idx);
+                    }
+                }
+                return ret;
+            }
             let name_idxs = str_locator.locate(field.unwrap());
             let field_maps = &self.field_maps;
             let mut ret = HashSet::new();
@@ -187,7 +220,8 @@ impl<'a> FieldLocator<'a> {
                         self._debug_log("locate", t_start, Some(clz_fids_set.len()));
                         return clz_fids_set;
                     }
-                    let ret = self._match_clz_fids(&clz_fids_set, field.unwrap());
+                    let ret =
+                        self._match_clz_fids(&clz_fids_set, field.unwrap(), field_precise);
                     self._debug_log("locate", t_start, Some(ret.len()));
                     return ret;
                 }
@@ -201,6 +235,9 @@ impl<'a> FieldLocator<'a> {
             if field.is_none() {
                 self._debug_log("locate", t_start, Some(clz_fids.len()));
                 return clz_fids;
+            }
+            if field_precise {
+                return self._match_clz_fids(&clz_fids, field.unwrap(), true);
             }
             // fuzzy class + fuzzy field
             let name_idxs = str_locator.locate(field.unwrap());

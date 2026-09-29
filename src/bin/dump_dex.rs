@@ -1,12 +1,8 @@
-// Use #[path] to reference the module files in src/
-#[path = "../asc_core/mod.rs"]
-mod asc_core;
-#[path = "../asc_client/mod.rs"]
-mod asc_client;
-
 use std::env;
 use std::fs;
 use std::io::Read;
+
+use rust_ASC::asc_core::core::dex::dex_manager::DexManager;
 
 // === Minimal DEX parser for dump ===
 
@@ -304,7 +300,7 @@ fn main() {
         println!("Formatted class name: {}", formatted_class);
 
         // Rebuild using DexManager
-        let mut dex_mgr = crate::asc_core::core::dex::dex_manager::DexManager::from_bytes(buf, false);
+        let mut dex_mgr = DexManager::from_bytes(buf, false);
         let rebuilt = dex_mgr.extract_and_rebuild(&formatted_class);
 
         let out_path = format!("{}.rebuilt.dex", dex_path);

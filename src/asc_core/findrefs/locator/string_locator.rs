@@ -11,8 +11,8 @@ use std::time::Instant;
 
 struct _STRUCT_I;
 impl _STRUCT_I {
-    fn unpack_from(buf: &[u8], off: usize) -> u32 {
-        u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]])
+    fn unpack_from(buf: &[u8], off: usize) -> Option<u32> {
+        Some(u32::from_le_bytes(buf.get(off..off + 4)?.try_into().ok()?))
     }
 }
 
@@ -52,15 +52,65 @@ impl<'a> StringLocator<'a> {
         let mut string_ids_off = string_ids_off as usize;
         let stridx_map = &mut self.stridx_map;
         let buf = self.base.buf;
+        if string_ids_size == 0 {
+            self.parsed = true;
+            self._debug_log("build_map", t_start, Some(0));
+            return;
+        }
+        let string_ids_end = string_ids_off
+            .checked_add(string_ids_size as usize * 4)
+            .unwrap_or(usize::MAX);
+        if string_ids_end > buf.len() {
+            self.parsed = true;
+            self._debug_log("build_map", t_start, Some(0));
+            return;
+        }
         // might buggy.. r8 not specify the first string data off is the begging of all string data off, but usually it was...
-        self.strdata_start = _STRUCT_I::unpack_from(buf, string_ids_off);
+        let Some(strdata_start) = _STRUCT_I::unpack_from(buf, string_ids_off) else {
+            self.parsed = true;
+            self._debug_log("build_map", t_start, Some(0));
+            return;
+        };
+        self.strdata_start = strdata_start;
         let mut data_offset = 0u32;
         for idx in 0..string_ids_size {
-            data_offset = _STRUCT_I::unpack_from(buf, string_ids_off);
+            data_offset = _STRUCT_I::unpack_from(buf, string_ids_off).unwrap();
             string_ids_off += 4;
+            if data_offset as usize >= buf.len() {
+                self.stridx_map.clear();
+                self.strdata_start = 0;
+                self.parsed = true;
+                self._debug_log("build_map", t_start, Some(0));
+                return;
+            }
             stridx_map.insert(data_offset, idx);
         }
-        self.strdata_end = data_offset;
+        // Include the final string_data_item. The existing lookup maps a
+        // match through the following string offset, so add an end sentinel
+        // for the final item without changing that mapping scheme.
+        let mut end = data_offset as usize;
+        while end < buf.len() && buf[end] & 0x80 != 0 {
+            end += 1;
+        }
+        let Some(payload_start) = end.checked_add(1).filter(|&offset| offset <= buf.len()) else {
+            self.stridx_map.clear();
+            self.strdata_start = 0;
+            self.parsed = true;
+            self._debug_log("build_map", t_start, Some(0));
+            return;
+        };
+        let Some(relative_end) = buf[payload_start..]
+            .iter()
+            .position(|&byte| byte == 0)
+        else {
+            self.stridx_map.clear();
+            self.strdata_start = 0;
+            self.parsed = true;
+            self._debug_log("build_map", t_start, Some(0));
+            return;
+        };
+        self.strdata_end = (payload_start + relative_end + 1) as u32;
+        stridx_map.insert(self.strdata_end, string_ids_size);
         self.parsed = true;
         let count = stridx_map.len();
         self._debug_log("build_map", t_start, Some(count));
@@ -70,6 +120,9 @@ impl<'a> StringLocator<'a> {
         let buf = self.base.buf;
         let strdata_start = self.strdata_start as usize;
         let strdata_end = self.strdata_end as usize;
+        if strdata_start > strdata_end || strdata_end > buf.len() {
+            return Vec::new();
+        }
         let submem = &buf[strdata_start..strdata_end];
 
         let pattern = Regex::new(string).unwrap();
@@ -97,7 +150,9 @@ impl<'a> StringLocator<'a> {
         let mut located_idx = HashSet::new();
         for offset in self._match_string_offset(string) {
             if let Some(&idx) = stridx_map.get(&offset) {
-                located_idx.insert(idx - 1);
+                if let Some(idx) = idx.checked_sub(1) {
+                    located_idx.insert(idx);
+                }
             }
         }
         self._debug_log("locate", t_start, Some(located_idx.len()));

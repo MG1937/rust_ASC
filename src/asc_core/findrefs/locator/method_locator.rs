@@ -29,11 +29,24 @@ impl _STRUCT_I {
 pub struct MethodFind {
     pub class: Option<(String, bool)>, // (clz, precise)
     pub method: Option<String>,
+    pub method_precise: bool,
 }
 
 impl MethodFind {
     pub fn new(class: Option<(String, bool)>, method: Option<String>) -> Self {
-        MethodFind { class, method }
+        MethodFind {
+            class,
+            method,
+            method_precise: false,
+        }
+    }
+
+    pub fn new_exact(class: Option<(String, bool)>, method: Option<String>) -> Self {
+        MethodFind {
+            class,
+            method,
+            method_precise: true,
+        }
     }
 }
 
@@ -119,11 +132,21 @@ impl<'a> MethodLocator<'a> {
         ret
     }
 
-    pub fn _match_clz_mids(&self, clz_mids: &HashSet<u32>, method: &str) -> HashSet<u32> {
+    pub fn _match_clz_mids(
+        &self,
+        clz_mids: &HashSet<u32>,
+        method: &str,
+        precise: bool,
+    ) -> HashSet<u32> {
         let mut ret = HashSet::new();
         for &mid in clz_mids {
             let m = self.base.dex.get_method(mid);
-            if m.name().contains(method) {
+            let name = m.name();
+            if if precise {
+                name == method
+            } else {
+                name.contains(method)
+            } {
                 ret.insert(mid);
             }
         }
@@ -141,6 +164,7 @@ impl<'a> MethodLocator<'a> {
 
         let mut clz = find.class.as_ref();
         let method = find.method.as_ref();
+        let method_precise = find.method_precise;
         let mut clz_precise = true;
         if let Some((clz_str, precise)) = clz {
             if clz_str.is_empty() {
@@ -156,6 +180,15 @@ impl<'a> MethodLocator<'a> {
         }
 
         if clz.is_none() {
+            if method_precise {
+                let mut ret = HashSet::new();
+                for method_idx in 0..self.base.dex.header.methods.1 {
+                    if self.base.dex.get_method(method_idx).name() == method.unwrap().as_str() {
+                        ret.insert(method_idx);
+                    }
+                }
+                return ret;
+            }
             let name_idxs = str_locator.locate(method.unwrap());
             let method_maps = &self.method_maps;
             let mut ret = HashSet::new();
@@ -187,7 +220,8 @@ impl<'a> MethodLocator<'a> {
                         self._debug_log("locate", t_start, Some(clz_mids_set.len()));
                         return clz_mids_set;
                     }
-                    let ret = self._match_clz_mids(&clz_mids_set, method.unwrap());
+                    let ret =
+                        self._match_clz_mids(&clz_mids_set, method.unwrap(), method_precise);
                     self._debug_log("locate", t_start, Some(ret.len()));
                     return ret;
                 }
@@ -201,6 +235,9 @@ impl<'a> MethodLocator<'a> {
             if method.is_none() {
                 self._debug_log("locate", t_start, Some(clz_mids.len()));
                 return clz_mids;
+            }
+            if method_precise {
+                return self._match_clz_mids(&clz_mids, method.unwrap(), true);
             }
             // fuzzy class + fuzzy method
             let name_idxs = str_locator.locate(method.unwrap());

@@ -8,7 +8,9 @@ use crate::asc_core::core::dex::dex_manager::DexManager;
 use crate::asc_core::findrefs::findrefs_manager::{FindRefInput, FindRefManager};
 use crate::asc_core::findrefs::locator::field_locator::FieldFind;
 use crate::asc_core::findrefs::locator::method_locator::MethodFind;
-use crate::asc_core::utils::decompiler::decompile_dex_bytes;
+use crate::asc_core::utils::decompiler::{
+    decompile_dex_bytes, decompile_dex_bytes_with_metadata, MemberReference,
+};
 use crate::asc_core::utils::tinydex::DEX;
 
 // -----------------------------------------------------------------
@@ -23,13 +25,21 @@ impl AscHandler {
         AscHandler { debug }
     }
 
-    /// Extract and decompile the specified class
-    ///
-    /// NOTE: decompile_dex_bytes depends on androguard, Rust version not yet implemented.
+    /// Extract and decompile the specified class.
     pub fn getclass(&self, dex_buf: &[u8], dalvik_class: &str) -> String {
         let mut manager = DexManager::from_bytes(dex_buf.to_vec(), self.debug);
         let new_dex_bytes = manager.extract_and_rebuild(dalvik_class);
         decompile_dex_bytes(&new_dex_bytes, dalvik_class)
+    }
+
+    pub fn getclass_with_metadata(
+        &self,
+        dex_buf: &[u8],
+        dalvik_class: &str,
+    ) -> (String, Vec<MemberReference>) {
+        let mut manager = DexManager::from_bytes(dex_buf.to_vec(), self.debug);
+        let new_dex_bytes = manager.extract_and_rebuild(dalvik_class);
+        decompile_dex_bytes_with_metadata(&new_dex_bytes, dalvik_class)
     }
 
     fn _format_method(&self, dex: &DEX, midx: usize) -> String {

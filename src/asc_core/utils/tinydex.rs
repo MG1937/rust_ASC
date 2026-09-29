@@ -1,16 +1,20 @@
 use crate::asc_core::utils::leb128::read_uleb128_fast;
+use std::cell::{RefCell, RefMut};
+use std::collections::HashMap;
+use std::fmt;
+use std::rc::Rc;
 
 struct _STRUCT_I;
 impl _STRUCT_I {
     fn unpack_from(buf: &[u8], off: usize) -> u32 {
-        u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]])
+        u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
     }
 }
 
 struct _STRUCT_H;
 impl _STRUCT_H {
     fn unpack_from(buf: &[u8], off: usize) -> u16 {
-        u16::from_le_bytes([buf[off], buf[off+1]])
+        u16::from_le_bytes([buf[off], buf[off + 1]])
     }
 }
 
@@ -18,9 +22,9 @@ struct _STRUCT_III;
 impl _STRUCT_III {
     fn unpack_from(buf: &[u8], off: usize) -> (u32, u32, u32) {
         (
-            u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]]),
-            u32::from_le_bytes([buf[off+4], buf[off+5], buf[off+6], buf[off+7]]),
-            u32::from_le_bytes([buf[off+8], buf[off+9], buf[off+10], buf[off+11]]),
+            u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]),
+            u32::from_le_bytes([buf[off + 4], buf[off + 5], buf[off + 6], buf[off + 7]]),
+            u32::from_le_bytes([buf[off + 8], buf[off + 9], buf[off + 10], buf[off + 11]]),
         )
     }
 }
@@ -29,9 +33,9 @@ struct _STRUCT_HHI;
 impl _STRUCT_HHI {
     fn unpack_from(buf: &[u8], off: usize) -> (u16, u16, u32) {
         (
-            u16::from_le_bytes([buf[off], buf[off+1]]),
-            u16::from_le_bytes([buf[off+2], buf[off+3]]),
-            u32::from_le_bytes([buf[off+4], buf[off+5], buf[off+6], buf[off+7]]),
+            u16::from_le_bytes([buf[off], buf[off + 1]]),
+            u16::from_le_bytes([buf[off + 2], buf[off + 3]]),
+            u32::from_le_bytes([buf[off + 4], buf[off + 5], buf[off + 6], buf[off + 7]]),
         )
     }
 }
@@ -40,16 +44,17 @@ struct _STRUCT_HHHHII;
 impl _STRUCT_HHHHII {
     fn unpack_from(buf: &[u8], off: usize) -> (u16, u16, u16, u16, u32, u32) {
         (
-            u16::from_le_bytes([buf[off], buf[off+1]]),
-            u16::from_le_bytes([buf[off+2], buf[off+3]]),
-            u16::from_le_bytes([buf[off+4], buf[off+5]]),
-            u16::from_le_bytes([buf[off+6], buf[off+7]]),
-            u32::from_le_bytes([buf[off+8], buf[off+9], buf[off+10], buf[off+11]]),
-            u32::from_le_bytes([buf[off+12], buf[off+13], buf[off+14], buf[off+15]]),
+            u16::from_le_bytes([buf[off], buf[off + 1]]),
+            u16::from_le_bytes([buf[off + 2], buf[off + 3]]),
+            u16::from_le_bytes([buf[off + 4], buf[off + 5]]),
+            u16::from_le_bytes([buf[off + 6], buf[off + 7]]),
+            u32::from_le_bytes([buf[off + 8], buf[off + 9], buf[off + 10], buf[off + 11]]),
+            u32::from_le_bytes([buf[off + 12], buf[off + 13], buf[off + 14], buf[off + 15]]),
         )
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct DEXHeader {
     pub strings: (u32, u32), // (off, size)
     pub types: (u32, u32),
@@ -121,7 +126,9 @@ impl Type {
     }
 
     fn parse(&mut self) {
-        if self._parsed { return; }
+        if self._parsed {
+            return;
+        }
         self._parsed = true;
         let desc = self.descriptor.clone();
         let mut d = desc.as_str();
@@ -140,26 +147,69 @@ impl Type {
 
         self._type = Some(TypeTypes::CLASS);
         match d {
-            "V" => { self._type = Some(TypeTypes::PRIMITIVE); self._value = Some(TypeValue::Primitive(PrimitiveTypes::VOID_T)); }
-            "Z" => { self._type = Some(TypeTypes::PRIMITIVE); self._value = Some(TypeValue::Primitive(PrimitiveTypes::BOOLEAN)); }
-            "B" => { self._type = Some(TypeTypes::PRIMITIVE); self._value = Some(TypeValue::Primitive(PrimitiveTypes::BYTE)); }
-            "S" => { self._type = Some(TypeTypes::PRIMITIVE); self._value = Some(TypeValue::Primitive(PrimitiveTypes::SHORT)); }
-            "C" => { self._type = Some(TypeTypes::PRIMITIVE); self._value = Some(TypeValue::Primitive(PrimitiveTypes::CHAR)); }
-            "I" => { self._type = Some(TypeTypes::PRIMITIVE); self._value = Some(TypeValue::Primitive(PrimitiveTypes::INT)); }
-            "J" => { self._type = Some(TypeTypes::PRIMITIVE); self._value = Some(TypeValue::Primitive(PrimitiveTypes::LONG)); }
-            "F" => { self._type = Some(TypeTypes::PRIMITIVE); self._value = Some(TypeValue::Primitive(PrimitiveTypes::FLOAT)); }
-            "D" => { self._type = Some(TypeTypes::PRIMITIVE); self._value = Some(TypeValue::Primitive(PrimitiveTypes::DOUBLE)); }
-            _ => { self._value = Some(TypeValue::Class(d.to_string())); }
+            "V" => {
+                self._type = Some(TypeTypes::PRIMITIVE);
+                self._value = Some(TypeValue::Primitive(PrimitiveTypes::VOID_T));
+            }
+            "Z" => {
+                self._type = Some(TypeTypes::PRIMITIVE);
+                self._value = Some(TypeValue::Primitive(PrimitiveTypes::BOOLEAN));
+            }
+            "B" => {
+                self._type = Some(TypeTypes::PRIMITIVE);
+                self._value = Some(TypeValue::Primitive(PrimitiveTypes::BYTE));
+            }
+            "S" => {
+                self._type = Some(TypeTypes::PRIMITIVE);
+                self._value = Some(TypeValue::Primitive(PrimitiveTypes::SHORT));
+            }
+            "C" => {
+                self._type = Some(TypeTypes::PRIMITIVE);
+                self._value = Some(TypeValue::Primitive(PrimitiveTypes::CHAR));
+            }
+            "I" => {
+                self._type = Some(TypeTypes::PRIMITIVE);
+                self._value = Some(TypeValue::Primitive(PrimitiveTypes::INT));
+            }
+            "J" => {
+                self._type = Some(TypeTypes::PRIMITIVE);
+                self._value = Some(TypeValue::Primitive(PrimitiveTypes::LONG));
+            }
+            "F" => {
+                self._type = Some(TypeTypes::PRIMITIVE);
+                self._value = Some(TypeValue::Primitive(PrimitiveTypes::FLOAT));
+            }
+            "D" => {
+                self._type = Some(TypeTypes::PRIMITIVE);
+                self._value = Some(TypeValue::Primitive(PrimitiveTypes::DOUBLE));
+            }
+            _ => {
+                self._value = Some(TypeValue::Class(d.to_string()));
+            }
         }
     }
 
-    pub fn dim(&mut self) -> u32 { self.parse(); self._dim }
-    pub fn underlying_array_type(&mut self) -> Option<Box<Type>> { self.parse(); self._underlying_array_type.clone() }
-    pub fn value(&mut self) -> Option<TypeValue> { self.parse(); self._value.clone() }
-    pub fn type_(&mut self) -> Option<u32> { self.parse(); self._type }
+    pub fn dim(&mut self) -> u32 {
+        self.parse();
+        self._dim
+    }
+
+    pub fn underlying_array_type(&mut self) -> Option<Box<Type>> {
+        self.parse();
+        self._underlying_array_type.clone()
+    }
+
+    pub fn value(&mut self) -> Option<TypeValue> {
+        self.parse();
+        self._value.clone()
+    }
+
+    pub fn type_(&mut self) -> Option<u32> {
+        self.parse();
+        self._type
+    }
 }
 
-use std::fmt;
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.descriptor)
@@ -171,7 +221,11 @@ pub struct DexString {
 }
 
 impl DexString {
-    pub fn new(value: &str) -> Self { DexString { value: value.to_string() } }
+    pub fn new(value: &str) -> Self {
+        DexString {
+            value: value.to_string(),
+        }
+    }
 }
 
 impl fmt::Display for DexString {
@@ -180,33 +234,54 @@ impl fmt::Display for DexString {
     }
 }
 
+struct DexContext {
+    buf: Rc<Vec<u8>>,
+    header: DEXHeader,
+    strings_cache: RefCell<HashMap<usize, DexString>>,
+    types_cache: RefCell<HashMap<u32, Type>>,
+    prototypes_cache: RefCell<HashMap<u32, DexPrototype>>,
+    methods_cache: RefCell<HashMap<u32, DexMethod>>,
+    fields_cache: RefCell<HashMap<u32, DexField>>,
+    classes_cache: RefCell<Vec<DexClass>>,
+    classes_by_name: RefCell<HashMap<String, u32>>,
+}
+
 #[derive(Clone)]
 pub struct DexPrototype {
     pub shorty_idx: u32,
     pub return_type_idx: u32,
     pub parameters_off: u32,
-    dex: *const DEX,
+    context: Rc<DexContext>,
 }
 
 impl DexPrototype {
     pub fn new(dex: &DEX, proto_idx: u32) -> Self {
-        let offset = (dex.header.prototypes.0 + proto_idx * 12) as usize;
-        let (shorty_idx, return_type_idx, parameters_off) = _STRUCT_III::unpack_from(&dex.buf, offset);
-        DexPrototype { shorty_idx, return_type_idx, parameters_off, dex: dex as *const DEX }
+        Self::new_with_context(&dex.context, proto_idx)
+    }
+
+    fn new_with_context(context: &Rc<DexContext>, proto_idx: u32) -> Self {
+        let offset = (context.header.prototypes.0 + proto_idx * 12) as usize;
+        let (shorty_idx, return_type_idx, parameters_off) =
+            _STRUCT_III::unpack_from(&context.buf, offset);
+        DexPrototype {
+            shorty_idx,
+            return_type_idx,
+            parameters_off,
+            context: Rc::clone(context),
+        }
     }
 
     pub fn parameters_type(&self) -> Vec<String> {
-        let dex = unsafe { &*self.dex };
         if self.parameters_off == 0 {
             return Vec::new();
         }
-        let size = _STRUCT_I::unpack_from(&dex.buf, self.parameters_off as usize) as usize;
+        let size = _STRUCT_I::unpack_from(&self.context.buf, self.parameters_off as usize) as usize;
         let mut params = Vec::with_capacity(size);
         let mut off = (self.parameters_off + 4) as usize;
         for _ in 0..size {
-            let type_idx = _STRUCT_H::unpack_from(&dex.buf, off) as u32;
+            let type_idx = _STRUCT_H::unpack_from(&self.context.buf, off) as u32;
             off += 2;
-            params.push(dex.get_type(type_idx).descriptor.clone());
+            params.push(self.context.get_type(type_idx).descriptor);
         }
         params
     }
@@ -220,13 +295,17 @@ pub struct DexField {
     pub name_idx: u32,
     pub access_flags: u32,
     pub is_static: bool,
-    dex: *const DEX,
+    context: Rc<DexContext>,
 }
 
 impl DexField {
     pub fn new(dex: &DEX, field_idx: u32) -> Self {
-        let offset = (dex.header.fields.0 + field_idx * 8) as usize;
-        let (class_idx, type_idx, name_idx) = _STRUCT_HHI::unpack_from(&dex.buf, offset);
+        Self::new_with_context(&dex.context, field_idx)
+    }
+
+    fn new_with_context(context: &Rc<DexContext>, field_idx: u32) -> Self {
+        let offset = (context.header.fields.0 + field_idx * 8) as usize;
+        let (class_idx, type_idx, name_idx) = _STRUCT_HHI::unpack_from(&context.buf, offset);
         DexField {
             index: field_idx,
             class_idx: class_idx as u32,
@@ -234,23 +313,22 @@ impl DexField {
             name_idx,
             access_flags: 0,
             is_static: false,
-            dex: dex as *const DEX,
+            context: Rc::clone(context),
         }
     }
 
     pub fn cls(&self) -> FieldClass {
-        let dex = unsafe { &*self.dex };
-        FieldClass { fullname: dex.get_type(self.class_idx).descriptor.clone() }
+        FieldClass {
+            fullname: self.context.get_type(self.class_idx).descriptor,
+        }
     }
 
     pub fn type_(&self) -> Type {
-        let dex = unsafe { &*self.dex };
-        dex.get_type(self.type_idx)
+        self.context.get_type(self.type_idx)
     }
 
     pub fn name(&self) -> String {
-        let dex = unsafe { &*self.dex };
-        dex.get_string(self.name_idx as usize).value.clone()
+        self.context.get_string(self.name_idx as usize).value
     }
 }
 
@@ -268,13 +346,17 @@ pub struct DexMethod {
     pub access_flags: u32,
     pub is_direct: bool,
     pub is_virtual: bool,
-    dex: *const DEX,
+    context: Rc<DexContext>,
 }
 
 impl DexMethod {
     pub fn new(dex: &DEX, method_idx: u32) -> Self {
-        let offset = (dex.header.methods.0 + method_idx * 8) as usize;
-        let (class_idx, proto_idx, name_idx) = _STRUCT_HHI::unpack_from(&dex.buf, offset);
+        Self::new_with_context(&dex.context, method_idx)
+    }
+
+    fn new_with_context(context: &Rc<DexContext>, method_idx: u32) -> Self {
+        let offset = (context.header.methods.0 + method_idx * 8) as usize;
+        let (class_idx, proto_idx, name_idx) = _STRUCT_HHI::unpack_from(&context.buf, offset);
         DexMethod {
             index: method_idx,
             class_idx: class_idx as u32,
@@ -284,37 +366,37 @@ impl DexMethod {
             access_flags: 0,
             is_direct: false,
             is_virtual: false,
-            dex: dex as *const DEX,
+            context: Rc::clone(context),
         }
     }
 
     pub fn cls(&self) -> FieldClass {
-        let dex = unsafe { &*self.dex };
-        FieldClass { fullname: dex.get_type(self.class_idx).descriptor.clone() }
+        FieldClass {
+            fullname: self.context.get_type(self.class_idx).descriptor,
+        }
     }
 
     pub fn name(&self) -> String {
-        let dex = unsafe { &*self.dex };
-        dex.get_string(self.name_idx as usize).value.clone()
+        self.context.get_string(self.name_idx as usize).value
     }
 
     pub fn prototype(&self) -> DexPrototype {
-        let dex = unsafe { &*self.dex };
-        dex.get_prototype(self.proto_idx)
+        DexContext::get_prototype(&self.context, self.proto_idx)
     }
 
-    pub fn code_offset(&self) -> u32 { self._code_off }
+    pub fn code_offset(&self) -> u32 {
+        self._code_off
+    }
 
     pub fn bytecode(&self) -> Vec<u8> {
-        let dex = unsafe { &*self.dex };
         if self._code_off == 0 {
             return Vec::new();
         }
         let off = self._code_off as usize;
-        let (registers_size, ins_size, outs_size, tries_size, debug_info_off, insns_size) =
-            _STRUCT_HHHHII::unpack_from(&dex.buf, off);
+        let (_, _, _, _, _, insns_size) =
+            _STRUCT_HHHHII::unpack_from(&self.context.buf, off);
         let off = off + 16;
-        let insns_bytes = &dex.buf[off..off + insns_size as usize * 2];
+        let insns_bytes = &self.context.buf[off..off + insns_size as usize * 2];
         insns_bytes.to_vec()
     }
 }
@@ -326,12 +408,21 @@ pub struct DexClass {
     _methods: Vec<usize>,
     _fields: Vec<usize>,
     _parsed: bool,
-    dex: *const DEX,
+    context: Rc<DexContext>,
 }
 
 impl DexClass {
     pub fn new(dex: &DEX, class_idx: u32, class_def_off: u32, class_index: u32) -> Self {
-        let class_data_off = _STRUCT_I::unpack_from(&dex.buf, (class_def_off + 24) as usize);
+        Self::new_with_context(&dex.context, class_idx, class_def_off, class_index)
+    }
+
+    fn new_with_context(
+        context: &Rc<DexContext>,
+        class_idx: u32,
+        class_def_off: u32,
+        class_index: u32,
+    ) -> Self {
+        let class_data_off = _STRUCT_I::unpack_from(&context.buf, (class_def_off + 24) as usize);
         DexClass {
             class_idx,
             index: class_index,
@@ -339,74 +430,90 @@ impl DexClass {
             _methods: Vec::new(),
             _fields: Vec::new(),
             _parsed: false,
-            dex: dex as *const DEX,
+            context: Rc::clone(context),
         }
     }
 
     pub fn fullname(&self) -> String {
-        let dex = unsafe { &*self.dex };
-        dex.get_type(self.class_idx).descriptor.clone()
+        self.context.get_type(self.class_idx).descriptor
     }
 
     fn parse_class_data(&mut self) {
-        if self._parsed { return; }
+        if self._parsed {
+            return;
+        }
         self._parsed = true;
-        if self.class_data_off == 0 { return; }
+        if self.class_data_off == 0 {
+            return;
+        }
 
-        let dex = unsafe { &*self.dex };
-        let data = &dex.buf;
+        let data = &self.context.buf;
         let mut pos = self.class_data_off as usize;
-        let (static_fields_size, c) = read_uleb128_fast(data, pos); pos += c;
-        let (instance_fields_size, c) = read_uleb128_fast(data, pos); pos += c;
-        let (direct_methods_size, c) = read_uleb128_fast(data, pos); pos += c;
-        let (virtual_methods_size, c) = read_uleb128_fast(data, pos); pos += c;
+        let (static_fields_size, c) = read_uleb128_fast(data, pos);
+        pos += c;
+        let (instance_fields_size, c) = read_uleb128_fast(data, pos);
+        pos += c;
+        let (direct_methods_size, c) = read_uleb128_fast(data, pos);
+        pos += c;
+        let (virtual_methods_size, c) = read_uleb128_fast(data, pos);
+        pos += c;
 
         let mut field_idx: u32 = 0;
         for _ in 0..static_fields_size {
-            let (field_idx_diff, c) = read_uleb128_fast(data, pos); pos += c;
+            let (field_idx_diff, c) = read_uleb128_fast(data, pos);
+            pos += c;
             field_idx += field_idx_diff as u32;
-            let (access_flags, c) = read_uleb128_fast(data, pos); pos += c;
-            let f = dex.get_field_mut(field_idx);
-            f.access_flags = access_flags as u32;
-            f.is_static = true;
+            let (access_flags, c) = read_uleb128_fast(data, pos);
+            pos += c;
+            let mut field = DexContext::get_field_mut(&self.context, field_idx);
+            field.access_flags = access_flags as u32;
+            field.is_static = true;
             self._fields.push(field_idx as usize);
         }
 
         field_idx = 0;
         for _ in 0..instance_fields_size {
-            let (field_idx_diff, c) = read_uleb128_fast(data, pos); pos += c;
+            let (field_idx_diff, c) = read_uleb128_fast(data, pos);
+            pos += c;
             field_idx += field_idx_diff as u32;
-            let (access_flags, c) = read_uleb128_fast(data, pos); pos += c;
-            let f = dex.get_field_mut(field_idx);
-            f.access_flags = access_flags as u32;
-            f.is_static = false;
+            let (access_flags, c) = read_uleb128_fast(data, pos);
+            pos += c;
+            let mut field = DexContext::get_field_mut(&self.context, field_idx);
+            field.access_flags = access_flags as u32;
+            field.is_static = false;
             self._fields.push(field_idx as usize);
         }
 
         let mut method_idx: u32 = 0;
         for _ in 0..direct_methods_size {
-            let (method_idx_diff, c) = read_uleb128_fast(data, pos); pos += c;
+            let (method_idx_diff, c) = read_uleb128_fast(data, pos);
+            pos += c;
             method_idx += method_idx_diff as u32;
-            let (access_flags, c) = read_uleb128_fast(data, pos); pos += c;
-            let (code_off, c) = read_uleb128_fast(data, pos); pos += c;
-            let m = dex.get_method_mut(method_idx);
-            m._code_off = code_off as u32;
-            m.access_flags = access_flags as u32;
-            m.is_direct = true;
+            let (access_flags, c) = read_uleb128_fast(data, pos);
+            pos += c;
+            let (code_off, c) = read_uleb128_fast(data, pos);
+            pos += c;
+            let mut method = DexContext::get_method_mut(&self.context, method_idx);
+            method._code_off = code_off as u32;
+            method.access_flags = access_flags as u32;
+            method.is_direct = true;
             self._methods.push(method_idx as usize);
         }
 
         method_idx = 0;
         for _ in 0..virtual_methods_size {
-            let (method_idx_diff, c) = read_uleb128_fast(data, pos); pos += c;
+            let (method_idx_diff, c) = read_uleb128_fast(data, pos);
+            pos += c;
             method_idx += method_idx_diff as u32;
-            let (access_flags, c) = read_uleb128_fast(data, pos); pos += c;
-            let (code_off, c) = read_uleb128_fast(data, pos); pos += c;
-            let m = dex.get_method_mut(method_idx);
-            m._code_off = code_off as u32;
-            m.access_flags = access_flags as u32;
-            m.is_direct = false;
-            m.is_virtual = true;
+            let (access_flags, c) = read_uleb128_fast(data, pos);
+            pos += c;
+            let (code_off, c) = read_uleb128_fast(data, pos);
+            pos += c;
+            let mut method = DexContext::get_method_mut(&self.context, method_idx);
+            method._code_off = code_off as u32;
+            method.access_flags = access_flags as u32;
+            method.is_direct = false;
+            method.is_virtual = true;
             self._methods.push(method_idx as usize);
         }
     }
@@ -422,39 +529,8 @@ impl DexClass {
     }
 }
 
-use std::collections::HashMap;
-use std::cell::RefCell;
-
-pub struct DEX {
-    pub buf: Vec<u8>,
-    pub name: String,
-    pub header: DEXHeader,
-    strings_cache: RefCell<HashMap<usize, DexString>>,
-    types_cache: RefCell<HashMap<u32, Type>>,
-    prototypes_cache: RefCell<HashMap<u32, DexPrototype>>,
-    methods_cache: RefCell<HashMap<u32, DexMethod>>,
-    fields_cache: RefCell<HashMap<u32, DexField>>,
-    classes_cache: RefCell<Vec<DexClass>>,
-    classes_by_name: RefCell<HashMap<String, u32>>,
-}
-
-impl DEX {
-    pub fn parse(buf: &[u8], name: &str) -> Self {
-        DEX {
-            buf: buf.to_vec(),
-            name: name.to_string(),
-            header: DEXHeader::new(buf),
-            strings_cache: RefCell::new(HashMap::new()),
-            types_cache: RefCell::new(HashMap::new()),
-            prototypes_cache: RefCell::new(HashMap::new()),
-            methods_cache: RefCell::new(HashMap::new()),
-            fields_cache: RefCell::new(HashMap::new()),
-            classes_cache: RefCell::new(Vec::new()),
-            classes_by_name: RefCell::new(HashMap::new()),
-        }
-    }
-
-    pub fn get_string(&self, str_idx: usize) -> DexString {
+impl DexContext {
+    fn get_string(&self, str_idx: usize) -> DexString {
         let mut cache = self.strings_cache.borrow_mut();
         if let Some(s) = cache.get(&str_idx) {
             return s.clone();
@@ -470,7 +546,7 @@ impl DEX {
         ds
     }
 
-    pub fn get_type(&self, type_idx: u32) -> Type {
+    fn get_type(&self, type_idx: u32) -> Type {
         let mut cache = self.types_cache.borrow_mut();
         if let Some(t) = cache.get(&type_idx) {
             return t.clone();
@@ -483,106 +559,100 @@ impl DEX {
         t
     }
 
-    pub fn get_prototype(&self, proto_idx: u32) -> DexPrototype {
-        let mut cache = self.prototypes_cache.borrow_mut();
+    fn get_prototype(context: &Rc<Self>, proto_idx: u32) -> DexPrototype {
+        let mut cache = context.prototypes_cache.borrow_mut();
         if let Some(p) = cache.get(&proto_idx) {
             return p.clone();
         }
-        let p = DexPrototype::new(self, proto_idx);
+        let p = DexPrototype::new_with_context(context, proto_idx);
         cache.insert(proto_idx, p.clone());
         p
     }
 
-    pub fn get_method(&self, method_idx: u32) -> DexMethod {
-        let mut cache = self.methods_cache.borrow_mut();
+    fn get_method(context: &Rc<Self>, method_idx: u32) -> DexMethod {
+        let mut cache = context.methods_cache.borrow_mut();
         if let Some(m) = cache.get(&method_idx) {
             return m.clone();
         }
-        let m = DexMethod::new(self, method_idx);
+        let m = DexMethod::new_with_context(context, method_idx);
         cache.insert(method_idx, m.clone());
         m
     }
 
-    pub fn get_method_mut<'a>(&'a self, method_idx: u32) -> &'a mut DexMethod {
-        if !self.methods_cache.borrow().contains_key(&method_idx) {
-            self.methods_cache.borrow_mut().insert(method_idx, DexMethod::new(self, method_idx));
+    fn get_method_mut(context: &Rc<Self>, method_idx: u32) -> RefMut<'_, DexMethod> {
+        if !context.methods_cache.borrow().contains_key(&method_idx) {
+            context
+                .methods_cache
+                .borrow_mut()
+                .insert(method_idx, DexMethod::new_with_context(context, method_idx));
         }
-        unsafe {
-            let map = self.methods_cache.as_ptr();
-            (*map).get_mut(&method_idx).unwrap()
-        }
+        RefMut::map(context.methods_cache.borrow_mut(), |cache| {
+            cache.get_mut(&method_idx).unwrap()
+        })
     }
 
-    pub fn get_field(&self, field_idx: u32) -> DexField {
-        let mut cache = self.fields_cache.borrow_mut();
+    fn get_field(context: &Rc<Self>, field_idx: u32) -> DexField {
+        let mut cache = context.fields_cache.borrow_mut();
         if let Some(f) = cache.get(&field_idx) {
             return f.clone();
         }
-        let f = DexField::new(self, field_idx);
+        let f = DexField::new_with_context(context, field_idx);
         cache.insert(field_idx, f.clone());
         f
     }
 
-    pub fn get_field_mut<'a>(&'a self, field_idx: u32) -> &'a mut DexField {
-        if !self.fields_cache.borrow().contains_key(&field_idx) {
-            self.fields_cache.borrow_mut().insert(field_idx, DexField::new(self, field_idx));
+    fn get_field_mut(context: &Rc<Self>, field_idx: u32) -> RefMut<'_, DexField> {
+        if !context.fields_cache.borrow().contains_key(&field_idx) {
+            context
+                .fields_cache
+                .borrow_mut()
+                .insert(field_idx, DexField::new_with_context(context, field_idx));
         }
-        unsafe {
-            let map = self.fields_cache.as_ptr();
-            (*map).get_mut(&field_idx).unwrap()
-        }
+        RefMut::map(context.fields_cache.borrow_mut(), |cache| {
+            cache.get_mut(&field_idx).unwrap()
+        })
     }
 
-    pub fn classes_len(&self) -> u32 {
-        self.header.classes.1
-    }
-
-    pub fn get_class_by_idx(&self, class_idx: u32) -> DexClass {
-        let mut cache = self.classes_cache.borrow_mut();
-        // Ensure vec is populated
-        if cache.len() == 0 {
-            let off = self.header.classes.0 as usize;
-            let size = self.header.classes.1;
+    fn get_class_by_idx(context: &Rc<Self>, class_idx: u32) -> DexClass {
+        let mut cache = context.classes_cache.borrow_mut();
+        if cache.is_empty() {
+            let off = context.header.classes.0 as usize;
+            let size = context.header.classes.1;
             for i in 0..size {
                 let class_def_off = off + i as usize * 32;
-                let type_idx = _STRUCT_I::unpack_from(&self.buf, class_def_off);
-                cache.push(DexClass::new(self, type_idx, class_def_off as u32, i));
+                let type_idx = _STRUCT_I::unpack_from(&context.buf, class_def_off);
+                cache.push(DexClass::new_with_context(
+                    context,
+                    type_idx,
+                    class_def_off as u32,
+                    i,
+                ));
             }
         }
-        // Return an owned copy - simplified: recreate from raw data
-        let off = self.header.classes.0 as usize;
+        let off = context.header.classes.0 as usize;
         let class_def_off = off + class_idx as usize * 32;
-        let type_idx = _STRUCT_I::unpack_from(&self.buf, class_def_off);
-        DexClass::new(self, type_idx, class_def_off as u32, class_idx)
+        let type_idx = _STRUCT_I::unpack_from(&context.buf, class_def_off);
+        DexClass::new_with_context(context, type_idx, class_def_off as u32, class_idx)
     }
 
-    fn get_uleb128_prefix(&self, lens: usize) -> Vec<u8> {
-        if lens < 128 {
-            vec![lens as u8]
-        } else {
-            vec![(lens | 0x80) as u8, (lens >> 7) as u8]
-        }
-    }
-
-    pub fn get_class(&self, fullname: &str) -> Option<DexClass> {
-        // Check cache
-        if let Some(idx) = self.classes_by_name.borrow().get(fullname) {
-            return Some(self.get_class_by_idx(*idx));
+    fn get_class(context: &Rc<Self>, fullname: &str) -> Option<DexClass> {
+        if let Some(idx) = context.classes_by_name.borrow().get(fullname) {
+            return Some(Self::get_class_by_idx(context, *idx));
         }
 
-        let off = self.header.classes.0 as usize;
-        let size = self.header.classes.1;
-        let type_ids_off = self.header.types.0 as usize;
-        let type_ids_size = self.header.types.1;
+        let off = context.header.classes.0 as usize;
+        let size = context.header.classes.1;
+        let type_ids_off = context.header.types.0 as usize;
+        let type_ids_size = context.header.types.1;
 
-        // Binary search for type_idx
         let mut type_idx: i32 = -1;
         let mut left: i32 = 0;
-        let mut right = type_ids_size as i32 - 1;
+        let mut right: i32 = type_ids_size as i32 - 1;
         while left <= right {
             let mid = (left + right) / 2;
-            let desc_idx = _STRUCT_I::unpack_from(&self.buf, type_ids_off + mid as usize * 4) as usize;
-            let string = &self.get_string(desc_idx).value;
+            let desc_idx =
+                _STRUCT_I::unpack_from(&context.buf, type_ids_off + mid as usize * 4) as usize;
+            let string = &context.get_string(desc_idx).value;
             if *string == *fullname {
                 type_idx = mid;
                 break;
@@ -599,21 +669,96 @@ impl DEX {
 
         for class_idx in 0..size {
             let class_def_off = off + class_idx as usize * 0x20;
-            if _STRUCT_I::unpack_from(&self.buf, class_def_off) != type_idx as u32 {
+            if _STRUCT_I::unpack_from(&context.buf, class_def_off) != type_idx as u32 {
                 continue;
             }
-            let clazz = self.get_class_by_idx(class_idx);
-            self.classes_by_name.borrow_mut().insert(fullname.to_string(), class_idx);
+            let clazz = Self::get_class_by_idx(context, class_idx);
+            context
+                .classes_by_name
+                .borrow_mut()
+                .insert(fullname.to_string(), class_idx);
             return Some(clazz);
         }
         None
     }
 }
 
-// Make DexString clonable
+pub struct DEX {
+    pub buf: Rc<Vec<u8>>,
+    pub name: String,
+    pub header: DEXHeader,
+    context: Rc<DexContext>,
+}
+
+impl DEX {
+    pub fn parse(buf: &[u8], name: &str) -> Self {
+        let buf = Rc::new(buf.to_vec());
+        let header = DEXHeader::new(&buf);
+        let context = Rc::new(DexContext {
+            buf: Rc::clone(&buf),
+            header,
+            strings_cache: RefCell::new(HashMap::new()),
+            types_cache: RefCell::new(HashMap::new()),
+            prototypes_cache: RefCell::new(HashMap::new()),
+            methods_cache: RefCell::new(HashMap::new()),
+            fields_cache: RefCell::new(HashMap::new()),
+            classes_cache: RefCell::new(Vec::new()),
+            classes_by_name: RefCell::new(HashMap::new()),
+        });
+        DEX {
+            buf,
+            name: name.to_string(),
+            header,
+            context,
+        }
+    }
+
+    pub fn get_string(&self, str_idx: usize) -> DexString {
+        self.context.get_string(str_idx)
+    }
+
+    pub fn get_type(&self, type_idx: u32) -> Type {
+        self.context.get_type(type_idx)
+    }
+
+    pub fn get_prototype(&self, proto_idx: u32) -> DexPrototype {
+        DexContext::get_prototype(&self.context, proto_idx)
+    }
+
+    pub fn get_method(&self, method_idx: u32) -> DexMethod {
+        DexContext::get_method(&self.context, method_idx)
+    }
+
+    pub fn get_method_mut(&self, method_idx: u32) -> RefMut<'_, DexMethod> {
+        DexContext::get_method_mut(&self.context, method_idx)
+    }
+
+    pub fn get_field(&self, field_idx: u32) -> DexField {
+        DexContext::get_field(&self.context, field_idx)
+    }
+
+    pub fn get_field_mut(&self, field_idx: u32) -> RefMut<'_, DexField> {
+        DexContext::get_field_mut(&self.context, field_idx)
+    }
+
+    pub fn classes_len(&self) -> u32 {
+        self.header.classes.1
+    }
+
+    pub fn get_class_by_idx(&self, class_idx: u32) -> DexClass {
+        DexContext::get_class_by_idx(&self.context, class_idx)
+    }
+
+    pub fn get_class(&self, fullname: &str) -> Option<DexClass> {
+        DexContext::get_class(&self.context, fullname)
+    }
+}
+
 impl Clone for DexString {
     fn clone(&self) -> Self {
-        DexString { value: self.value.clone() }
+        DexString {
+            value: self.value.clone(),
+        }
     }
 }
 
@@ -638,6 +783,3 @@ impl Clone for TypeValue {
         }
     }
 }
-
-unsafe impl Send for DEX {}
-unsafe impl Sync for DEX {}

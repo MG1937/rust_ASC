@@ -1,0 +1,3 @@
+[submodule "radguard"]
+	path = radguard
+	url = https://github.com/MG1937/radguard/

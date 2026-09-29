@@ -12,7 +12,7 @@ use std::thread;
 use std::time::Instant;
 
 use flate2::read::DeflateDecoder;
-use memmap2::{Mmap, MmapOptions};
+use libdeflater::Decompressor;
 
 use crate::asc_client::asc_handler::AscHandler;
 use crate::asc_core::findrefs::findrefs_manager::FindRefInput;
@@ -52,28 +52,32 @@ struct DexEntry {
 // ---------- ZIP helpers ----------
 
 fn _find_eocd(buf: &[u8]) -> Option<usize> {
+    if buf.len() < 22 {
+        return None;
+    }
     let search_start = if buf.len() > 65536 + 22 {
         buf.len() - 65536 - 22
     } else {
         0
     };
     // search backwards
-    let end = buf.len().saturating_sub(22);
-    let mut pos = end;
-    while pos >= search_start {
+    for pos in (search_start..=buf.len() - 22).rev() {
         if buf[pos..pos + 4] == *_EOCD_SIG {
             return Some(pos);
         }
-        pos = pos.saturating_sub(1);
     }
     None
 }
 
 fn _parse_cd_dex_entries(buf: &[u8]) -> Vec<DexEntry> {
-    let eocd_off = _find_eocd(buf).expect("EOCD not found");
+    let Some(eocd_off) = _find_eocd(buf) else {
+        return Vec::new();
+    };
     let cd_size = _u32_from(buf, eocd_off + 12) as usize;
     let cd_off = _u32_from(buf, eocd_off + 16) as usize;
-    let cd_end = cd_off + cd_size;
+    let Some(cd_end) = cd_off.checked_add(cd_size).filter(|&end| end <= buf.len()) else {
+        return Vec::new();
+    };
 
     let mut entries: Vec<DexEntry> = Vec::new();
     let mut seen_names: Vec<Vec<u8>> = Vec::new();
@@ -190,22 +194,52 @@ fn _inflate_deflate_chunks(compressed: &[u8], stop: Option<&AtomicBool>) -> Opti
     Some(out)
 }
 
-fn _inflate_dex(buf: &[u8], entry: &DexEntry, stop: Option<&AtomicBool>) -> Result<Vec<u8>, String> {
+fn _compressed_data<'a>(buf: &'a [u8], entry: &DexEntry) -> Result<&'a [u8], String> {
     let lh_off = entry.local_header_off as usize;
-    if buf[lh_off..lh_off + 4] != *_LH_SIG {
+    if lh_off
+        .checked_add(30)
+        .is_none_or(|header_end| header_end > buf.len())
+        || buf[lh_off..lh_off + 4] != *_LH_SIG
+    {
         return Err("bad local header signature".to_string());
     }
 
     let name_len = _u16_from(buf, lh_off + 26) as usize;
     let extra_len = _u16_from(buf, lh_off + 28) as usize;
-    let data_off = lh_off + 30 + name_len + extra_len;
-    let comp_slice = &buf[data_off..data_off + entry.comp_size as usize];
+    let data_off = lh_off
+        .checked_add(30)
+        .and_then(|off| off.checked_add(name_len))
+        .and_then(|off| off.checked_add(extra_len))
+        .ok_or_else(|| "bad local header range".to_owned())?;
+    let data_end = data_off
+        .checked_add(entry.comp_size as usize)
+        .filter(|&end| end <= buf.len())
+        .ok_or_else(|| "bad compressed data range".to_owned())?;
+    Ok(&buf[data_off..data_end])
+}
+
+fn _validate_inflated_size(entry: &DexEntry, data: Vec<u8>) -> Result<Vec<u8>, String> {
+    if data.len() != entry.uncomp_size as usize {
+        return Err(format!(
+            "size mismatch: expect {}, got {}",
+            entry.uncomp_size,
+            data.len()
+        ));
+    }
+    Ok(data)
+}
+
+// getclass needs chunk boundaries so another worker can stop this inflate early.
+fn _inflate_dex_cancellable(
+    buf: &[u8],
+    entry: &DexEntry,
+    stop: Option<&AtomicBool>,
+) -> Result<Vec<u8>, String> {
+    let comp_slice = _compressed_data(buf, entry)?;
 
     let data = if entry.comp_method == 0 {
-        // stored
         comp_slice.to_vec()
     } else if entry.comp_method == 8 {
-        // deflated
         match _inflate_deflate_chunks(comp_slice, stop) {
             Some(d) => d,
             None => return Ok(Vec::new()), // stopped
@@ -214,14 +248,71 @@ fn _inflate_dex(buf: &[u8], entry: &DexEntry, stop: Option<&AtomicBool>) -> Resu
         return Err(format!("unsupported compression method: {}", entry.comp_method));
     };
 
-    if entry.uncomp_size != 0 && data.len() != entry.uncomp_size as usize {
-        return Err(format!(
-            "size mismatch: expect {}, got {}",
-            entry.uncomp_size,
-            data.len()
-        ));
+    _validate_inflated_size(entry, data)
+}
+
+// Non-cancellable ZIP entry extraction uses libdeflate exclusively.
+fn _inflate_dex_libdeflater(buf: &[u8], entry: &DexEntry) -> Result<Vec<u8>, String> {
+    let comp_slice = _compressed_data(buf, entry)?;
+    let data = match entry.comp_method {
+        0 => comp_slice.to_vec(),
+        8 => {
+            let mut data = vec![0; entry.uncomp_size as usize];
+            let actual_size = Decompressor::new()
+                .deflate_decompress(comp_slice, &mut data)
+                .map_err(|error| format!("libdeflate cannot decompress {}: {error}", entry.name))?;
+            data.truncate(actual_size);
+            data
+        }
+        method => return Err(format!("unsupported compression method: {method}")),
+    };
+    _validate_inflated_size(entry, data)
+}
+
+pub(crate) fn _extract_zip_entry(buf: &[u8], target_name: &str) -> Result<Vec<u8>, String> {
+    let eocd_off = _find_eocd(buf).ok_or_else(|| "EOCD not found".to_owned())?;
+    let cd_size = _u32_from(buf, eocd_off + 12) as usize;
+    let cd_off = _u32_from(buf, eocd_off + 16) as usize;
+    let cd_end = cd_off
+        .checked_add(cd_size)
+        .filter(|&end| end <= buf.len())
+        .ok_or_else(|| "bad central directory range".to_owned())?;
+    let target_bytes = target_name.as_bytes();
+    let mut ptr = cd_off;
+
+    while ptr + 46 <= cd_end {
+        if buf[ptr..ptr + 4] != *_CD_SIG {
+            return Err("bad central directory signature".to_owned());
+        }
+        let name_len = _u16_from(buf, ptr + 28) as usize;
+        let extra_len = _u16_from(buf, ptr + 30) as usize;
+        let comment_len = _u16_from(buf, ptr + 32) as usize;
+        let name_start = ptr + 46;
+        let name_end = name_start
+            .checked_add(name_len)
+            .filter(|&end| end <= cd_end)
+            .ok_or_else(|| "bad central directory entry range".to_owned())?;
+
+        if &buf[name_start..name_end] == target_bytes {
+            return _inflate_dex_libdeflater(
+                buf,
+                &DexEntry {
+                    name: target_name.to_owned(),
+                    uncomp_size: _u32_from(buf, ptr + 24),
+                    comp_size: _u32_from(buf, ptr + 20),
+                    local_header_off: _u32_from(buf, ptr + 42),
+                    comp_method: _u16_from(buf, ptr + 10),
+                },
+            );
+        }
+
+        ptr = name_end
+            .checked_add(extra_len)
+            .and_then(|off| off.checked_add(comment_len))
+            .ok_or_else(|| "bad central directory entry range".to_owned())?;
     }
-    Ok(data)
+
+    Err(format!("{target_name} not found in APK"))
 }
 
 // ---------- DEX scan helpers ----------
@@ -320,6 +411,77 @@ fn _dex_defines_class(buf: &[u8], target_bytes: &[u8]) -> bool {
     _class_defs_contains_type_idx(buf, type_idx as u32)
 }
 
+fn _list_dex_classes(buf: &[u8], prefix: Option<&str>) -> Result<Vec<String>, String> {
+    if buf.len() < 0x70 || &buf[..3] != b"dex" {
+        return Err("invalid DEX header".to_owned());
+    }
+
+    let string_ids_size = _u32_from(buf, 0x38) as usize;
+    let string_ids_off = _u32_from(buf, 0x3c) as usize;
+    let type_ids_size = _u32_from(buf, 0x40) as usize;
+    let type_ids_off = _u32_from(buf, 0x44) as usize;
+    let class_defs_size = _u32_from(buf, 0x60) as usize;
+    let class_defs_off = _u32_from(buf, 0x64) as usize;
+
+    if class_defs_size == 0 {
+        return Ok(Vec::new());
+    }
+    if string_ids_off
+        .checked_add(string_ids_size.saturating_mul(4))
+        .is_none_or(|end| end > buf.len())
+    {
+        return Err("bad string_ids range".to_owned());
+    }
+    if type_ids_off
+        .checked_add(type_ids_size.saturating_mul(4))
+        .is_none_or(|end| end > buf.len())
+    {
+        return Err("bad type_ids range".to_owned());
+    }
+    if class_defs_off
+        .checked_add(class_defs_size.saturating_mul(32))
+        .is_none_or(|end| end > buf.len())
+    {
+        return Err("bad class_defs range".to_owned());
+    }
+
+    let mut names = Vec::new();
+    for class_index in 0..class_defs_size {
+        let class_def_off = class_defs_off + class_index * 32;
+        let type_idx = _u32_from(buf, class_def_off) as usize;
+        if type_idx >= type_ids_size {
+            return Err("bad class_def->type_idx".to_owned());
+        }
+        let string_idx = _u32_from(buf, type_ids_off + type_idx * 4) as usize;
+        if string_idx >= string_ids_size {
+            return Err("bad type_id->string_idx".to_owned());
+        }
+        let string_off = _u32_from(buf, string_ids_off + string_idx * 4) as usize;
+        if string_off >= buf.len() {
+            return Err("bad string_data_off".to_owned());
+        }
+
+        let mut start = string_off;
+        while start < buf.len() && buf[start] & 0x80 != 0 {
+            start += 1;
+        }
+        if start >= buf.len() {
+            return Err("bad string_data_off".to_owned());
+        }
+        start += 1;
+        let end = buf[start..]
+            .iter()
+            .position(|byte| *byte == 0)
+            .map(|offset| start + offset)
+            .ok_or_else(|| "bad string_data_off".to_owned())?;
+        let name = String::from_utf8_lossy(&buf[start..end]).into_owned();
+        if prefix.is_none_or(|value| name.starts_with(value)) {
+            names.push(name);
+        }
+    }
+    Ok(names)
+}
+
 // ---------- worker helpers ----------
 
 fn _inflate_and_hit(
@@ -337,7 +499,7 @@ fn _inflate_and_hit(
     }
 
     let t0 = Instant::now();
-    let data = match _inflate_dex(buf, entry, Some(stop)) {
+    let data = match _inflate_dex_cancellable(buf, entry, Some(stop)) {
         Ok(d) => d,
         Err(_) => return (false, None, None),
     };
@@ -385,7 +547,7 @@ fn _findrefs_worker(
     find: &FindRefInput,
 ) -> (String, Vec<String>, f64, f64) {
     let t0 = Instant::now();
-    let data = _inflate_dex(buf, entry, None).unwrap_or_default();
+    let data = _inflate_dex_libdeflater(buf, entry).unwrap_or_default();
     let t1 = Instant::now();
 
     let mut lines = Vec::new();
@@ -426,14 +588,18 @@ impl ApkHandler {
         }
     }
 
-    fn _read_apk(&self) -> Result<Mmap, String> {
+    fn _read_apk(&self) -> Result<Vec<u8>, String> {
         let fp = File::open(&self.apk_path)
             .map_err(|e| format!("cannot open APK: {}", e))?;
-        unsafe {
-            MmapOptions::new()
-                .map(&fp)
-                .map_err(|e| format!("cannot memory-map APK: {}", e))
-        }
+        let capacity = fp
+            .metadata()
+            .map(|metadata| metadata.len() as usize)
+            .unwrap_or(0);
+        let mut apk = Vec::with_capacity(capacity);
+        (&fp)
+            .read_to_end(&mut apk)
+            .map_err(|e| format!("cannot read APK: {}", e))?;
+        Ok(apk)
     }
 
     /// Search for the specified class across all DEX files in the APK, return DEX name and data
@@ -540,6 +706,94 @@ impl ApkHandler {
 
         let result = result.lock().unwrap();
         result.clone()
+    }
+
+    pub fn list_classes(&self, prefix: Option<&str>) -> Result<Vec<String>, String> {
+        if self.max_workers == 0 {
+            return Err("Worker count must be greater than zero".to_owned());
+        }
+        let normalized_prefix = prefix
+            .map(str::trim)
+            .map(|value| {
+                if value.is_empty() {
+                    return Err("Class prefix cannot be empty".to_owned());
+                }
+                Ok(if value.starts_with('L') {
+                    value.to_owned()
+                } else {
+                    format!("L{}", value.replace('.', "/"))
+                })
+            })
+            .transpose()?;
+
+        let t_start = Instant::now();
+        let apk_buf = self._read_apk()?;
+        let entries = _parse_cd_dex_entries(&apk_buf);
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let worker_count = entries.len().min(self.max_workers);
+        let entries = Arc::new(entries);
+        let work_queue = Arc::new(Mutex::new(0usize));
+        let results = Arc::new(Mutex::new(
+            (0..entries.len())
+                .map(|_| None)
+                .collect::<Vec<Option<Result<(String, Vec<String>), String>>>>(),
+        ));
+
+        thread::scope(|scope| {
+            for _ in 0..worker_count {
+                let entries = Arc::clone(&entries);
+                let work_queue = Arc::clone(&work_queue);
+                let results = Arc::clone(&results);
+                let prefix = normalized_prefix.as_deref();
+                let apk_buf = &apk_buf;
+                scope.spawn(move || loop {
+                    let index = {
+                        let mut next = work_queue.lock().unwrap();
+                        if *next >= entries.len() {
+                            return;
+                        }
+                        let index = *next;
+                        *next += 1;
+                        index
+                    };
+                    let entry = &entries[index];
+                    let result = _inflate_dex_libdeflater(apk_buf, entry).and_then(|data| {
+                        let mut names = Vec::new();
+                        for (_dex_name, dex_buf) in iter_logical_dex_buffers(&entry.name, &data) {
+                            names.extend(_list_dex_classes(&dex_buf, prefix)?);
+                        }
+                        Ok((entry.name.clone(), names))
+                    });
+                    results.lock().unwrap()[index] = Some(result);
+                });
+            }
+        });
+
+        let mut names = Vec::new();
+        let mut results = results.lock().unwrap();
+        for result in results.iter_mut() {
+            let (dex_name, dex_names) = result
+                .take()
+                .ok_or_else(|| "listclass worker did not return a result".to_owned())??;
+            self._log(&format!(
+                "[APK] '{dex_name}' class_count={}",
+                dex_names.len()
+            ));
+            names.extend(dex_names);
+        }
+
+        if self.debug {
+            self._log(&format!(
+                "[APK] listclass total={:.2} us count={} workers={}",
+                t_start.elapsed().as_secs_f64() * 1_000_000.0,
+                names.len(),
+                worker_count
+            ));
+        }
+        Ok(names)
     }
 
     /// Find references in parallel across all DEX files in the APK, return result list

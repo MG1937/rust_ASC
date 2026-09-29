@@ -11,13 +11,19 @@ strip = "symbols"       # remove debug symbols
 panic = "abort"         # smaller binary, no unwind tables
 
 [dependencies]
-zip = { version = "2", default-features = false, features = ["deflate"] }
-# zlib-rs is flate2's faster pure-Rust DEFLATE backend. zip also enables
-# miniz_oxide, but flate2 gives zlib-rs priority when both are selected.
+# getclass keeps chunked flate2 decompression for cooperative early cancellation.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-memmap2 = "0.9"
+libdeflater = "1.26.1"
 regex = "1"
 lazy_static = "1"
 apk-info-axml = "1.0.13"
 quick-xml = "0.36"
 memchr = "2"
+radguard = { path = "radguard" }
+clap = "4"
+mimalloc = { version = "0.1", default-features = false }
+
+[dev-dependencies]
+adler2 = "2"
+sha1 = "0.10"
+tempfile = "3"

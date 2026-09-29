@@ -7,22 +7,26 @@ use crate::asc_core::utils::tinydex::DEX;
 use std::collections::HashMap;
 use std::time::Instant;
 
+const _EMPTY_BUCKET: u32 = 0;
+const _SHARED_BUCKET: u32 = 1 << 31;
+
 struct _STRUCT_I;
 impl _STRUCT_I {
     fn unpack_from(buf: &[u8], off: usize) -> u32 {
-        u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]])
+        u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
     }
 }
 
 struct _STRUCT_H;
 impl _STRUCT_H {
     fn unpack_from(buf: &[u8], off: usize) -> u16 {
-        u16::from_le_bytes([buf[off], buf[off+1]])
+        u16::from_le_bytes([buf[off], buf[off + 1]])
     }
 }
 
 // verify that bytes from start to end form a valid sequence of instructions
 // used as a secondary check after bucket-based lookup to avoid false positives
+// python ASC use regex for native insn verify speed up, we dont need it in rust
 pub fn insn_verify(buf: &[u8], start: usize, end: usize) -> bool {
     let mut pos = start;
     while pos < end {
@@ -61,11 +65,14 @@ pub fn insn_verify(buf: &[u8], start: usize, end: usize) -> bool {
 pub struct InsnLocator<'a> {
     pub base: BaseLocator<'a>,
     pub parsed: bool,
-    // use 16 bytes dense table to achieve O(1) speed
-    pub insn_maps: Vec<(u32, Vec<u32>)>, // {insn_off_bucket: [midx, midx2...]}
-    pub insn_maps_build: HashMap<u32, Vec<u32>>,
+    // Dense 16-byte bucket table. 0 is empty, midx + 1 is a single method,
+    // and the high bit refers to an entry in insn_shared.
+    pub insn_maps: Vec<u32>,
+    pub insn_maps_build: Vec<(u32, u32, u32)>, // [(bucket_start, bucket_end, midx)]
+    pub insn_shared: Vec<Vec<u32>>,
+    pub insn_bucket_base: u32,
     pub code_item_start: u32, // fuzzy offset around 16 bytes
-    pub code_item_end: u32, // fuzzy too
+    pub code_item_end: u32,   // fuzzy too
 
     // for insn verify... bugfix for insn mismatch 20260728
     pub method_bounds: HashMap<u32, u32>, // {midx: insn_off_start}
@@ -77,7 +84,9 @@ impl<'a> InsnLocator<'a> {
             base: BaseLocator::new(dex),
             parsed: false,
             insn_maps: Vec::new(),
-            insn_maps_build: HashMap::new(),
+            insn_maps_build: Vec::new(),
+            insn_shared: Vec::new(),
+            insn_bucket_base: 0,
             code_item_start: 0,
             code_item_end: 0,
             method_bounds: HashMap::new(),
@@ -100,27 +109,13 @@ impl<'a> InsnLocator<'a> {
         }
         let insn_size = _STRUCT_I::unpack_from(data, pos as usize + 12);
         let insn_off = pos + 16;
-        let insn_maps = &mut self.insn_maps_build;
         // need to declare why do this... checkout the diagram in file head
         let insn_bucket_start = insn_off >> 4;
+        let insn_bucket_end = (insn_off + insn_size * 2 - 1) >> 4;
 
         self.method_bounds.insert(midx, insn_off);
-
-        // R8 insn deduplicate machenism, different method may refer to same insn body
-        // Only fill the first bucket. locate() uses BTreeMap::range(..=bucket)
-        // to find the nearest lower bucket, then verifies with insn_verify().
-        // This avoids the O(N) per-method bucket fill loop.
-        match insn_maps.get_mut(&insn_bucket_start) {
-            Some(old) => {
-                let mut resolved_midxs = Vec::with_capacity(old.len() + 1);
-                resolved_midxs.push(midx);
-                resolved_midxs.extend_from_slice(old);
-                *old = resolved_midxs;
-            }
-            None => {
-                insn_maps.insert(insn_bucket_start, vec![midx]);
-            }
-        }
+        self.insn_maps_build
+            .push((insn_bucket_start, insn_bucket_end, midx));
     }
 
     // return next class data item pos
@@ -172,10 +167,17 @@ impl<'a> InsnLocator<'a> {
         // parse all items in one shot by map!
         let buf = self.base.buf;
         let mapoff = self.base.dex.header.mapoff as usize;
+        if mapoff == 0 || mapoff + 4 > buf.len() {
+            self._build_map_bydef();
+            return;
+        }
         let mapsize = _STRUCT_I::unpack_from(buf, mapoff);
         let mut mapoff = mapoff + 4;
         let mut mtype: u16 = 0;
         for _ in 0..mapsize {
+            if mapoff + 12 > buf.len() {
+                break;
+            }
             mtype = _STRUCT_H::unpack_from(buf, mapoff);
             if mtype == 0x2000 {
                 break;
@@ -188,8 +190,18 @@ impl<'a> InsnLocator<'a> {
         }
 
         // skip type + unused
-        let class_data_size = u32::from_le_bytes([buf[mapoff + 4], buf[mapoff + 5], buf[mapoff + 6], buf[mapoff + 7]]);
-        let mut class_data_off = u32::from_le_bytes([buf[mapoff + 8], buf[mapoff + 9], buf[mapoff + 10], buf[mapoff + 11]]);
+        let class_data_size = u32::from_le_bytes([
+            buf[mapoff + 4],
+            buf[mapoff + 5],
+            buf[mapoff + 6],
+            buf[mapoff + 7],
+        ]);
+        let mut class_data_off = u32::from_le_bytes([
+            buf[mapoff + 8],
+            buf[mapoff + 9],
+            buf[mapoff + 10],
+            buf[mapoff + 11],
+        ]);
         for _ in 0..class_data_size {
             class_data_off = self._class_data_parse(buf, class_data_off);
         }
@@ -216,21 +228,71 @@ impl<'a> InsnLocator<'a> {
         if self.parsed {
             return;
         }
-        let t_start = if self.base.debug { Some(Instant::now()) } else { None };
+        let t_start = if self.base.debug {
+            Some(Instant::now())
+        } else {
+            None
+        };
         self._build_map_bymap();
-        self.insn_maps = std::mem::take(&mut self.insn_maps_build).into_iter().collect();
-        self.insn_maps.sort_unstable_by_key(|(bucket, _)| *bucket);
-        if let (Some(min_key), Some(max_key)) = (self.insn_maps.first(), self.insn_maps.last()) {
-            self.code_item_start = min_key.0 << 4;
-            self.code_item_end = (max_key.0 + 1) << 4;
+        if !self.insn_maps_build.is_empty() {
+            let min_bucket = self
+                .insn_maps_build
+                .iter()
+                .map(|(start, _, _)| *start)
+                .min()
+                .unwrap();
+            let max_bucket = self
+                .insn_maps_build
+                .iter()
+                .map(|(_, end, _)| *end)
+                .max()
+                .unwrap();
+            self.insn_bucket_base = min_bucket;
+            self.insn_maps =
+                vec![_EMPTY_BUCKET; (max_bucket - min_bucket + 1) as usize];
+
+            for &(start, end, midx) in &self.insn_maps_build {
+                let start_index = (start - min_bucket) as usize;
+                let resolved = match self.insn_maps[start_index] {
+                    _EMPTY_BUCKET => midx + 1,
+                    slot if slot & _SHARED_BUCKET == 0 => {
+                        let shared_index = self.insn_shared.len() as u32;
+                        self.insn_shared.push(vec![midx, slot - 1]);
+                        _SHARED_BUCKET | shared_index
+                    }
+                    slot => {
+                        let old = &self.insn_shared[(slot & !_SHARED_BUCKET) as usize];
+                        let mut methods = Vec::with_capacity(old.len() + 1);
+                        methods.extend_from_slice(old);
+                        methods.push(midx);
+                        let shared_index = self.insn_shared.len() as u32;
+                        self.insn_shared.push(methods);
+                        _SHARED_BUCKET | shared_index
+                    }
+                };
+                self.insn_maps[(start - min_bucket) as usize..=(end - min_bucket) as usize]
+                    .fill(resolved);
+            }
+            self.insn_maps_build.clear();
+            self.code_item_start = min_bucket << 4;
+            self.code_item_end = (max_bucket + 1) << 4;
         }
         self.parsed = true;
-        self._debug_log("parse", t_start, Some(self.insn_maps.len()));
+        let mapped_count = self
+            .insn_maps
+            .iter()
+            .filter(|&&slot| slot != _EMPTY_BUCKET)
+            .count();
+        self._debug_log("parse", t_start, Some(mapped_count));
     }
 
     // insn offset to method idx, warn: midx can be None or list
     pub fn locate(&mut self, offsets: &[u32]) -> Vec<Option<Vec<u32>>> {
-        let t_start = if self.base.debug { Some(Instant::now()) } else { None };
+        let t_start = if self.base.debug {
+            Some(Instant::now())
+        } else {
+            None
+        };
         if !self.parsed {
             // parse timing controlled by manager
             return Vec::new();
@@ -238,22 +300,31 @@ impl<'a> InsnLocator<'a> {
         let mut ret_table: Vec<Option<Vec<u32>>> = Vec::with_capacity(offsets.len());
         let insn_maps = &self.insn_maps;
         let buf = self.base.buf;
-        let method_bounds = &mut self.method_bounds;
+        let mut method_bounds = HashMap::new();
 
         for &off in offsets {
             let bucket = off >> 4;
-            // BTreeMap range query: find the nearest bucket ≤ target bucket.
-            // Since each method only inserts its first bucket, a later instruction
-            // offset maps to the method's first bucket via this range query.
-            let index = insn_maps.partition_point(|(key, _)| *key <= bucket);
-            let midx_option = index.checked_sub(1).map(|idx| &insn_maps[idx].1);
+            let slot = bucket
+                .checked_sub(self.insn_bucket_base)
+                .and_then(|index| insn_maps.get(index as usize))
+                .copied()
+                .unwrap_or(_EMPTY_BUCKET);
 
-            match midx_option {
-                Some(midxs) if !midxs.is_empty() => {
+            match slot {
+                _EMPTY_BUCKET => ret_table.push(None),
+                slot => {
+                    let midxs = if slot & _SHARED_BUCKET == 0 {
+                        vec![slot - 1]
+                    } else {
+                        self.insn_shared[(slot & !_SHARED_BUCKET) as usize].clone()
+                    };
                     let first_midx = midxs[0];
-                    if let Some(&start_off) = method_bounds.get(&first_midx) {
+                    if let Some(&start_off) = method_bounds
+                        .get(&first_midx)
+                        .or_else(|| self.method_bounds.get(&first_midx))
+                    {
                         if insn_verify(buf, start_off as usize, off as usize) {
-                            ret_table.push(Some(midxs.clone()));
+                            ret_table.push(Some(midxs));
                             method_bounds.insert(first_midx, off);
                         } else {
                             ret_table.push(None);
@@ -261,9 +332,6 @@ impl<'a> InsnLocator<'a> {
                     } else {
                         ret_table.push(None);
                     }
-                }
-                _ => {
-                    ret_table.push(None);
                 }
             }
         }

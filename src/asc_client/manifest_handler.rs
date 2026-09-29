@@ -1,13 +1,13 @@
 // Auth: MG1937
 // Strict 1:1 translation from Python manifest_handler.py
 
-use std::fs::File;
-use std::io::Read;
+use std::fs;
 
 use apk_info_axml::AXML;
 use quick_xml::events::Event;
 use quick_xml::{Reader, Writer};
-use zip::ZipArchive;
+
+use crate::asc_client::apk_handler::_extract_zip_entry;
 
 fn _quiet_loguru() {
     // No-op in Rust: there is no loguru/androguard to silence.
@@ -44,15 +44,8 @@ fn _format_xml(xml: &str, pretty: bool) -> Result<String, String> {
 
 /// Get text representation of AndroidManifest.xml from APK
 pub fn get_manifest_xml(apk_path: &str, pretty: bool) -> Result<String, String> {
-    let fp = File::open(apk_path)
-        .map_err(|e| format!("cannot open APK: {}", e))?;
-    let mut zf = ZipArchive::new(fp)
-        .map_err(|e| format!("cannot read APK as ZIP: {}", e))?;
-    let mut manifest = zf.by_name("AndroidManifest.xml")
-        .map_err(|e| format!("AndroidManifest.xml not found in APK: {}", e))?;
-    let mut manifest_data = Vec::new();
-    manifest.read_to_end(&mut manifest_data)
-        .map_err(|e| format!("cannot read AndroidManifest.xml: {}", e))?;
+    let apk = fs::read(apk_path).map_err(|e| format!("cannot open APK: {}", e))?;
+    let manifest_data = _extract_zip_entry(&apk, "AndroidManifest.xml")?;
 
     _quiet_loguru();
     let mut input = manifest_data.as_slice();
