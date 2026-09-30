@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use cesu8::to_java_cesu8;
+
 use crate::asc_core::utils::leb128::write_uleb128;
 use crate::asc_core::utils::leb128::write_sleb128;
 use crate::asc_core::utils::dex_parser::rebuild_annotation_item;
@@ -133,9 +135,9 @@ impl<'a, 'b> DexBuilder<'a, 'b> {
         for s in &self.im.str_restruct {
             string_data_offs.push(self.out.len() as u32);
             // MUTF-8 length
-            let s_bytes = s.as_bytes();
-            self.out.extend(write_uleb128(s.len() as u64)); // char length, approx len(s) for ascii
-            self.out.extend(s_bytes);
+            let s_bytes = to_java_cesu8(s);
+            self.out.extend(write_uleb128(s.encode_utf16().count() as u64));
+            self.out.extend_from_slice(&s_bytes);
             self.out.push(0);
         }
 

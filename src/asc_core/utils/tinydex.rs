@@ -1,4 +1,6 @@
 use crate::asc_core::utils::leb128::read_uleb128_fast;
+use cesu8::from_java_cesu8;
+use memchr::memchr;
 use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::fmt;
@@ -51,6 +53,24 @@ impl _STRUCT_HHHHII {
             u32::from_le_bytes([buf[off + 8], buf[off + 9], buf[off + 10], buf[off + 11]]),
             u32::from_le_bytes([buf[off + 12], buf[off + 13], buf[off + 14], buf[off + 15]]),
         )
+    }
+}
+
+pub fn _decode_mutf8_fallback(raw: &[u8]) -> String {
+    match from_java_cesu8(raw) {
+        Ok(value) => value.into_owned(),
+        Err(_) => {
+            let mut normalized = Vec::with_capacity(raw.len());
+            let mut bytes = raw.iter().copied().peekable();
+            while let Some(byte) = bytes.next() {
+                normalized.push(if byte == 0xc0 && bytes.next_if_eq(&0x80).is_some() {
+                    0
+                } else {
+                    byte
+                });
+            }
+            String::from_utf8_lossy(&normalized).into_owned()
+        }
     }
 }
 
@@ -539,8 +559,26 @@ impl DexContext {
         let string_off = _STRUCT_I::unpack_from(&self.buf, str_idx_off + str_idx * 4) as usize;
         let (utf16_size, c) = read_uleb128_fast(&self.buf, string_off);
         let data_start = string_off + c;
-        let end = data_start + utf16_size as usize;
-        let s = String::from_utf8_lossy(&self.buf[data_start..end]).to_string();
+        let mut end = data_start
+            .checked_add(utf16_size as usize)
+            .unwrap_or(usize::MAX);
+        // ASCII keeps the old O(1) boundary calculation; MUTF-8 needs its terminator.
+        // refer to https://github.com/MG1937/ASC/issues/33
+        // 20260923 DEX.get_string slices utf16_size bytes out of a string_data_item, but that field counts UTF-16 code units
+        if end >= self.buf.len() || self.buf[end] != 0 {
+            end = self
+                .buf
+                .get(data_start..)
+                .and_then(|raw| memchr(0, raw))
+                .map(|offset| data_start + offset)
+                .expect("unterminated string_data_item");
+        }
+
+        let raw = &self.buf[data_start..end];
+        let s = match std::str::from_utf8(raw) {
+            Ok(s) => s.to_string(),
+            Err(_) => _decode_mutf8_fallback(raw),
+        };
         let ds = DexString::new(&s);
         cache.insert(str_idx, ds.clone());
         ds
@@ -660,6 +698,18 @@ impl DexContext {
                 left = mid + 1;
             } else {
                 right = mid - 1;
+            }
+        }
+
+        if type_idx == -1 {
+            // DEX sorts by UTF-16 code units, while Rust compares Unicode scalar values.
+            for mid in 0..type_ids_size {
+                let desc_idx =
+                    _STRUCT_I::unpack_from(&context.buf, type_ids_off + mid as usize * 4) as usize;
+                if context.get_string(desc_idx).value == fullname {
+                    type_idx = mid as i32;
+                    break;
+                }
             }
         }
 

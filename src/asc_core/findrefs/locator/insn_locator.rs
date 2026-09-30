@@ -60,6 +60,19 @@ pub fn insn_verify(buf: &[u8], start: usize, end: usize) -> bool {
 // methods are naturally bucketed.
 // For methods spanning multiple buckets,
 // fill all buckets from start to end. Achieves O(1) lookup.
+//
+// 20260930 change O(1) bucket struct, use dense table instead of hashmap, more faster
+// The code_off in encoded_method caps at 0xFFFF_FFFF. So the dense table's theoretical max is that >> 4, roughly 1GB.
+// In practice R8 enforces a 0xFFFF+1 method ceiling. Hitting the code_off cap would require every method to
+// hold 30k+ instructions (2 bytes each, ignoring extra structure between methods), which never happens.
+// I counted instruction counts across most APKs: over 70% of methods have fewer than 20 instructions.
+// Meanwhile Google's DEX code optimization wants each dex around 10MB max,
+// so even in the worst case the real dense table lands near 10MB >> 4, about 600KB.
+// https://developer.android.com/google/play/vitals/code-optimization
+//
+// also tried on python ASC, bascially no optimization,
+// likely because py dict is already native and can't be optimized further,
+// while Rust's HashMap is heavy, so switching structures pays off.
 
 // cover insn offset to method idx
 pub struct InsnLocator<'a> {
@@ -67,12 +80,12 @@ pub struct InsnLocator<'a> {
     pub parsed: bool,
     // Dense 16-byte bucket table. 0 is empty, midx + 1 is a single method,
     // and the high bit refers to an entry in insn_shared.
-    pub insn_maps: Vec<u32>,
-    pub insn_maps_build: Vec<(u32, u32, u32)>, // [(bucket_start, bucket_end, midx)]
-    pub insn_shared: Vec<Vec<u32>>,
-    pub insn_bucket_base: u32,
+    pub insn_maps: Vec<u32>, // [slot, ...], slot = 0 / midx + 1 / (_SHARED_BUCKET | shared_idx)
+    pub insn_maps_build: Vec<(u32, u32, u32)>, // [(bucket_start, bucket_end, midx), ...]
+    pub insn_shared: Vec<Vec<u32>>, // [[midx, midx2, ...], ...]
+    pub insn_bucket_base: u32, // insn_maps[insn_bucket - insn_bucket_base]
     pub code_item_start: u32, // fuzzy offset around 16 bytes
-    pub code_item_end: u32,   // fuzzy too
+    pub code_item_end: u32,  // fuzzy too
 
     // for insn verify... bugfix for insn mismatch 20260728
     pub method_bounds: HashMap<u32, u32>, // {midx: insn_off_start}
@@ -248,8 +261,7 @@ impl<'a> InsnLocator<'a> {
                 .max()
                 .unwrap();
             self.insn_bucket_base = min_bucket;
-            self.insn_maps =
-                vec![_EMPTY_BUCKET; (max_bucket - min_bucket + 1) as usize];
+            self.insn_maps = vec![_EMPTY_BUCKET; (max_bucket - min_bucket + 1) as usize];
 
             for &(start, end, midx) in &self.insn_maps_build {
                 let start_index = (start - min_bucket) as usize;
