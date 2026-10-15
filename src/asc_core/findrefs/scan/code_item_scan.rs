@@ -251,13 +251,13 @@ impl<'a> CodeItemScanner<'a> {
 
         if groups.len() > 1 {
             // separate scans per idx width break offset order, restore it
-            let mut indices: Vec<u32> = (0..matched_offset.len() as u32).collect();
-            indices.sort_by_key(|&i| matched_offset[i as usize]);
-            let sorted_matched_offset: Vec<u32> = indices.iter().map(|&i| matched_offset[i as usize]).collect();
+            let mut indices: Vec<usize> = (0..matched_offset.len()).collect();
+            indices.sort_by_key(|&i| matched_offset[i]);
+            let sorted_matched_offset: Vec<u32> = indices.iter().map(|&i| matched_offset[i]).collect();
             matched_offset.clear();
             matched_offset.extend(sorted_matched_offset);
             if mark {
-                let sorted_mark_idx: Vec<u32> = indices.iter().map(|&i| mark_idx[i as usize]).collect();
+                let sorted_mark_idx: Vec<u32> = indices.iter().map(|&i| mark_idx[i]).collect();
                 mark_idx.clear();
                 mark_idx.extend(sorted_mark_idx);
             }
