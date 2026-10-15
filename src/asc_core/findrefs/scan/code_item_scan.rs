@@ -89,55 +89,6 @@ pub const CONST_METHOD_TYPE: u8 = 0xff;
 use crate::asc_core::findrefs::locator::insn_locator::InsnLocator;
 use std::collections::{HashMap, HashSet};
 
-use lazy_static::lazy_static;
-use regex::bytes::Regex;
-
-lazy_static! {
-    // \x1a const-string \x1b const-string/jumbo
-    pub static ref STRINGIDX_OPS: Regex = Regex::new(r"[\x1a\x1b]").unwrap();
-
-    pub static ref TYPEIDX_OPS: Regex = Regex::new(r"[\x1c\x1f\x20\x22\x23\x24\x25]").unwrap();
-
-    pub static ref INSTANCE_FIELDIDX_OPS: Regex = Regex::new(r"[\x52-\x5f]").unwrap();
-
-    pub static ref STATIC_FIELDIDX_OPS: Regex = Regex::new(r"[\x60-\x6d]").unwrap();
-
-    pub static ref FIELDIDX_OPS: Regex = Regex::new(r"[\x52-\x6d]").unwrap();
-
-    pub static ref METHODIDX_OPS: Regex = Regex::new(r"[\x6e-\x72\x74-\x78\xfa\xfb]").unwrap();
-
-    // for dex038+, such insn are used very infrequently, so we just ignore it for now... 20260617
-    pub static ref CALLSITEIDX_OPS: Regex = Regex::new(r"[\xfc-\xfd]").unwrap();
-
-    pub static ref METHODHANDLEIDX_OPS: Regex = Regex::new(r"\xfe").unwrap();
-
-    pub static ref PROTOIDX_OPS: Regex = Regex::new(r"\xff").unwrap();
-    // fa/fb second proto idx cannot be expressed as OP + "" + idx directly
-}
-
-lazy_static! {
-    pub static ref OPCODE_PATTERNS: HashMap<&'static str, &'static Regex> = {
-        let mut m = HashMap::new();
-        m.insert("method", &*METHODIDX_OPS);
-        m.insert("field", &*FIELDIDX_OPS);
-        m.insert("type", &*TYPEIDX_OPS);
-        m
-    };
-}
-
-struct _STRUCT_I;
-impl _STRUCT_I {
-    fn unpack_from(buf: &[u8], off: usize) -> u32 {
-        u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]])
-    }
-}
-
-struct _STRUCT_H;
-impl _STRUCT_H {
-    fn unpack_from(buf: &[u8], off: usize) -> u16 {
-        u16::from_le_bytes([buf[off], buf[off+1]])
-    }
-}
 
 // scan type -> tuple of (opcode byte values, referenced idx width in bytes)
 // the referenced idx always starts two bytes after its opcode byte
@@ -155,55 +106,6 @@ fn _idx_groups(idx_type: &str) -> &[(&[u8], usize)] {
     }
 }
 
-const _ANY_BYTE: &str = r"[\x00-\xff]";
-const _CLASS_SPECIAL: &[u8] = b"\\]^-[";
-
-fn _escape_class_byte(value: u8) -> String {
-    if _CLASS_SPECIAL.contains(&value) {
-        format!("\\x{:02x}", value)
-    } else {
-        format!("\\x{:02x}", value)
-    }
-}
-
-fn _byte_class(values: &[u8]) -> String {
-    // compact regex character class matching exactly the given byte values
-    let mut values: Vec<u8> = values.to_vec();
-    values.sort();
-    values.dedup();
-    let total = values.len();
-    if total == 256 {
-        return _ANY_BYTE.to_string();
-    }
-    let mut out = String::from("[");
-    let mut index = 0;
-    while index < total {
-        let mut last = index;
-        while last + 1 < total && values[last + 1] == values[last] + 1 {
-            last += 1;
-        }
-        if last - index >= 2 {
-            out.push_str(&_escape_class_byte(values[index]));
-            out.push('-');
-            out.push_str(&_escape_class_byte(values[last]));
-        } else {
-            for pos in index..=last {
-                out.push_str(&_escape_class_byte(values[pos]));
-            }
-        }
-        index = last + 1;
-    }
-    out.push(']');
-    out
-}
-
-fn _build_scan_pattern(opcode_class: &str, _idx_width: usize, _idxs: &HashSet<u32>) -> Regex {
-    // Rust's regex crate does not support look-ahead, so we cannot use the Python
-    // pre-filter approach. Instead, match the opcode class directly; survivors
-    // are checked exactly by the caller below.
-    Regex::new(&format!(r"(?s-u){}", opcode_class)).unwrap()
-}
-
 // CPython compiles a one character class to a literal and scans for it with memchr
 // (measured 0.47 ns/byte); with two or more characters it falls back to the regex VM
 // loop (3.5-6.5 ns/byte), which the translate prefilter below beats outright. So the
@@ -212,10 +114,6 @@ fn _build_scan_pattern(opcode_class: &str, _idx_width: usize, _idxs: &HashSet<u3
 // Measured on a 3.21MB code region, regex vs prefilter: field 20.0 vs 10.1ms (-50%),
 // method 10.4 vs 8.3ms (-20%), type 20.5 vs 18.1ms (-12%), string 3.0 vs 10.6ms.
 //
-// NOTE: Rust's regex crate does NOT support look-ahead, so the regex path without
-// pre-filter is significantly slower. Force all groups to use dense scan instead.
-const _DENSE_OPCODE_COUNT: usize = 1;
-
 fn _mask_table(values: &[u8]) -> [u8; 256] {
     // 256 entry 0/1 table used by the dense scan below
     let mut table = [0u8; 256];
@@ -356,33 +254,7 @@ impl<'a> CodeItemScanner<'a> {
 
         let groups = _idx_groups(idx_type);
         for &(opcode_values, idx_width) in groups {
-            if opcode_values.len() >= _DENSE_OPCODE_COUNT {
-                // Use opcode_values directly for dense scan instead of regex
-                self._scan_code_item_dense(opcode_values, idxs, idx_width, mark, &mut matched_offset, &mut mark_idx);
-                continue;
-            }
-            let pattern = _build_scan_pattern(&_byte_class(opcode_values), idx_width, idxs);
-            for match_ in pattern.find_iter(submem) {
-                let start = match_.start();
-                // bounds check: need at least start + 2 + idx_width bytes
-                if start + 2 + idx_width > submem.len() {
-                    continue;
-                }
-                // the idx bytes were prefiltered in regex, the exact value still
-                // decides whether this opcode really references a target idx
-                let idx = if idx_width == 2 {
-                    _STRUCT_H::unpack_from(submem, start + 2) as u32
-                } else {
-                    _STRUCT_I::unpack_from(submem, start + 2)
-                };
-                if !idxs.contains(&idx) {
-                    continue;
-                }
-                matched_offset.push((start + off_start) as u32);
-                if mark {
-                    mark_idx.push(idx);
-                }
-            }
+            self._scan_code_item_dense(opcode_values, idxs, idx_width, mark, &mut matched_offset, &mut mark_idx);
         }
 
         if groups.len() > 1 {
