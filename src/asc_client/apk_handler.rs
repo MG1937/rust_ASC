@@ -823,7 +823,7 @@ impl ApkHandler {
         let results = Arc::new(Mutex::new(Vec::<(String, Vec<String>, f64, f64)>::new()));
         let find = Arc::new((*find).clone());
 
-        let num_workers = std::cmp::min(num_entries, std::cmp::max(self.max_workers, std::thread::available_parallelism().map_or(8, std::num::NonZero::get)));
+        let num_workers = std::cmp::min(num_entries, self.max_workers);
         let mut handles = Vec::with_capacity(num_workers);
 
         for _ in 0..num_workers {
