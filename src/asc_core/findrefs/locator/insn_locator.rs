@@ -4,7 +4,6 @@ use crate::asc_core::findrefs::locator::base_locator::{_debug_log, BaseLocator};
 use crate::asc_core::models::dvm_opcode::opcodes;
 use crate::asc_core::utils::leb128::{read_uleb128_fast, read_uleb128_len};
 use crate::asc_core::utils::tinydex::DEX;
-use std::collections::HashMap;
 use std::time::Instant;
 
 const _EMPTY_BUCKET: u32 = 0;
@@ -88,7 +87,7 @@ pub struct InsnLocator<'a> {
     pub code_item_end: u32,  // fuzzy too
 
     // for insn verify... bugfix for insn mismatch 20260728
-    pub method_bounds: HashMap<u32, u32>, // {midx: insn_off_start}
+    pub method_bounds: Vec<u32>, // method_bounds[midx] = insn_off_start
 }
 
 impl<'a> InsnLocator<'a> {
@@ -102,7 +101,7 @@ impl<'a> InsnLocator<'a> {
             insn_bucket_base: 0,
             code_item_start: 0,
             code_item_end: 0,
-            method_bounds: HashMap::new(),
+            method_bounds: vec![0; dex.header.methods.1 as usize],
         };
         locator
     }
@@ -126,7 +125,7 @@ impl<'a> InsnLocator<'a> {
         let insn_bucket_start = insn_off >> 4;
         let insn_bucket_end = (insn_off + insn_size * 2 - 1) >> 4;
 
-        self.method_bounds.insert(midx, insn_off);
+        self.method_bounds[midx as usize] = insn_off;
         self.insn_maps_build
             .push((insn_bucket_start, insn_bucket_end, midx));
     }
@@ -312,7 +311,7 @@ impl<'a> InsnLocator<'a> {
         let mut ret_table: Vec<Option<Vec<u32>>> = Vec::with_capacity(offsets.len());
         let insn_maps = &self.insn_maps;
         let buf = self.base.buf;
-        let mut method_bounds = HashMap::new();
+        let mut method_bounds = vec![0u32; self.method_bounds.len()];
 
         for &off in offsets {
             let bucket = off >> 4;
@@ -331,16 +330,15 @@ impl<'a> InsnLocator<'a> {
                         self.insn_shared[(slot & !_SHARED_BUCKET) as usize].clone()
                     };
                     let first_midx = midxs[0];
-                    if let Some(&start_off) = method_bounds
-                        .get(&first_midx)
-                        .or_else(|| self.method_bounds.get(&first_midx))
-                    {
-                        if insn_verify(buf, start_off as usize, off as usize) {
-                            ret_table.push(Some(midxs));
-                            method_bounds.insert(first_midx, off);
-                        } else {
-                            ret_table.push(None);
-                        }
+                    let first_midx = first_midx as usize;
+                    let start_off = if method_bounds[first_midx] != 0 {
+                        method_bounds[first_midx]
+                    } else {
+                        self.method_bounds[first_midx]
+                    };
+                    if start_off != 0 && insn_verify(buf, start_off as usize, off as usize) {
+                        ret_table.push(Some(midxs));
+                        method_bounds[first_midx] = off;
                     } else {
                         ret_table.push(None);
                     }
