@@ -18,7 +18,7 @@ impl _STRUCT_I {
 
 pub struct StringLocator<'a> {
     pub base: BaseLocator<'a>,
-    pub stridx_map: Vec<(u32, u32)>, // [(string_data_off, string_idx), ...]
+    pub stridx_map: Vec<u64>, // [(string_data_off << 32) | string_idx, ...]
     pub strdata_start: u32,
     pub strdata_end: u32,
     pub parsed: bool,
@@ -84,7 +84,7 @@ impl<'a> StringLocator<'a> {
                 self._debug_log("build_map", t_start, Some(0));
                 return;
             }
-            stridx_map.push((data_offset, idx));
+            stridx_map.push(((data_offset as u64) << 32) | idx as u64);
         }
         // Include the final string_data_item. The existing lookup maps a
         // match through the following string offset, so add an end sentinel
@@ -111,8 +111,8 @@ impl<'a> StringLocator<'a> {
             return;
         };
         self.strdata_end = (payload_start + relative_end + 1) as u32;
-        stridx_map.push((self.strdata_end, string_ids_size));
-        stridx_map.sort_unstable_by_key(|&(offset, _)| offset);
+        stridx_map.push(((self.strdata_end as u64) << 32) | string_ids_size as u64);
+        stridx_map.sort_unstable();
         self.parsed = true;
         let count = stridx_map.len();
         self._debug_log("build_map", t_start, Some(count));
@@ -143,8 +143,10 @@ impl<'a> StringLocator<'a> {
                         continue;
                     }
                     last_offset = offset;
-                    if let Ok(pos) = stridx_map.binary_search_by_key(&(offset as u32), |&(data_off, _)| data_off) {
-                        if let Some(idx) = stridx_map[pos].1.checked_sub(1) {
+                    let key = (offset as u64) << 32;
+                    let pos = stridx_map.partition_point(|&entry| entry < key);
+                    if pos < stridx_map.len() && stridx_map[pos] >> 32 == offset as u64 {
+                        if let Some(idx) = (stridx_map[pos] as u32).checked_sub(1) {
                             located_idx.insert(idx);
                         }
                     }
