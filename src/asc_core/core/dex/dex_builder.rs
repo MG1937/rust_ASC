@@ -136,6 +136,7 @@ impl<'a, 'b> DexBuilder<'a, 'b> {
             string_data_offs.push(self.out.len() as u32);
             // MUTF-8 length
             let s_bytes = to_java_cesu8(s);
+            // 20260930: use utf-16-le length for string data. Follow-up to MG1937/ASC/issues/33.
             self.out.extend(write_uleb128(s.encode_utf16().count() as u64));
             self.out.extend_from_slice(&s_bytes);
             self.out.push(0);

@@ -5,6 +5,7 @@ pub use radguard::writer::{MemberKind, MemberReference};
 /// Decompile a target class from an in-memory DEX using RadGuard.
 pub fn decompile_dex_bytes(dex_bytes: &[u8], dalvik_class_fmt: &str) -> String {
     radguard::decompile_dex_bytes(dex_bytes, dalvik_class_fmt)
+        .map(|output| output.source)
         .unwrap_or_else(|error| format!("/* RadGuard decompiler error: {error} */\n"))
 }
 
@@ -12,14 +13,14 @@ pub fn decompile_dex_bytes_with_metadata(
     dex_bytes: &[u8],
     dalvik_class_fmt: &str,
 ) -> (String, Vec<MemberReference>) {
-    radguard::decompile_dex_bytes_with_metadata(dex_bytes, dalvik_class_fmt).unwrap_or_else(
-        |error| {
+    radguard::decompile_dex_bytes(dex_bytes, dalvik_class_fmt)
+        .map(|output| (output.source, output.member_references))
+        .unwrap_or_else(|error| {
             (
                 format!("/* RadGuard decompiler error: {error} */\n"),
                 Vec::new(),
             )
-        },
-    )
+        })
 }
 
 #[cfg(test)]

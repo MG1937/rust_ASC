@@ -10,6 +10,10 @@ codegen-units = 1       # single compilation unit, more inlining
 strip = "symbols"       # remove debug symbols
 panic = "abort"         # smaller binary, no unwind tables
 
+[profile.dev]
+debug = true
+opt-level = 0
+
 [dependencies]
 # getclass keeps chunked flate2 decompression for cooperative early cancellation.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
