@@ -258,7 +258,8 @@ fn _inflate_dex_libdeflater(buf: &[u8], entry: &DexEntry) -> Result<Vec<u8>, Str
     let data = match entry.comp_method {
         0 => comp_slice.to_vec(),
         8 => {
-            let mut data = vec![0; entry.uncomp_size as usize];
+            let mut data = Vec::with_capacity(entry.uncomp_size as usize);
+            unsafe { data.set_len(entry.uncomp_size as usize); }
             let actual_size = Decompressor::new()
                 .deflate_decompress(comp_slice, &mut data)
                 .map_err(|error| format!("libdeflate cannot decompress {}: {error}", entry.name))?;
