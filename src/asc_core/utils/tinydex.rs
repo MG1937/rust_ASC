@@ -742,7 +742,11 @@ pub struct DEX {
 
 impl DEX {
     pub fn parse(buf: &[u8], name: &str) -> Self {
-        let buf = Rc::new(buf.to_vec());
+        Self::from_vec(buf.to_vec(), name)
+    }
+
+    pub fn from_vec(buf: Vec<u8>, name: &str) -> Self {
+        let buf = Rc::new(buf);
         let header = DEXHeader::new(&buf);
         let context = Rc::new(DexContext {
             buf: Rc::clone(&buf),

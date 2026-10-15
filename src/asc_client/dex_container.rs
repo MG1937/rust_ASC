@@ -197,3 +197,16 @@ pub fn iter_logical_dex_buffers(name: &str, data: &[u8]) -> Vec<(String, Vec<u8>
     }
     result
 }
+
+pub fn into_logical_dex_buffers(name: &str, data: Vec<u8>) -> Vec<(String, Vec<u8>)> {
+    let offsets = dex041_logical_offsets(&data);
+    if offsets.len() <= 1 {
+        return vec![(name.to_string(), data)];
+    }
+    let mut result = Vec::with_capacity(offsets.len());
+    for (idx, &header_off) in offsets.iter().enumerate() {
+        let logical_name = format!("{}!classes{}.dex", name, idx + 1);
+        result.push((logical_name, normalize_dex041_logical(&data, header_off)));
+    }
+    result
+}

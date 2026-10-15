@@ -17,7 +17,7 @@ use memmap2::{Mmap, MmapOptions};
 
 use crate::asc_client::asc_handler::AscHandler;
 use crate::asc_core::findrefs::findrefs_manager::FindRefInput;
-use crate::asc_client::dex_container::iter_logical_dex_buffers;
+use crate::asc_client::dex_container::{into_logical_dex_buffers, iter_logical_dex_buffers};
 
 // ---------- ZIP constants ----------
 
@@ -553,8 +553,8 @@ fn _findrefs_worker(
 
     let mut lines = Vec::new();
     let handler = AscHandler::new(false);
-    for (dex_name, dex_buf) in iter_logical_dex_buffers(&entry.name, &data) {
-        lines.extend(handler.findrefs(&dex_name, &dex_buf, find_type, find, true));
+    for (dex_name, dex_buf) in into_logical_dex_buffers(&entry.name, data) {
+        lines.extend(handler.findrefs_vec(&dex_name, dex_buf, find_type, find, true));
     }
     let t2 = Instant::now();
 

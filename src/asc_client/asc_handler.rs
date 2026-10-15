@@ -73,7 +73,30 @@ impl AscHandler {
         aggregate: bool,
     ) -> Vec<String> {
         let dex = DEX::parse(dex_buf, dex_name);
-        let mut ref_manager = FindRefManager::new(&dex, self.debug);
+        self._findrefs(dex_name, &dex, find_type, find, aggregate)
+    }
+
+    pub fn findrefs_vec(
+        &self,
+        dex_name: &str,
+        dex_buf: Vec<u8>,
+        find_type: &str,
+        find: &FindRefInput,
+        aggregate: bool,
+    ) -> Vec<String> {
+        let dex = DEX::from_vec(dex_buf, dex_name);
+        self._findrefs(dex_name, &dex, find_type, find, aggregate)
+    }
+
+    fn _findrefs(
+        &self,
+        dex_name: &str,
+        dex: &DEX,
+        find_type: &str,
+        find: &FindRefInput,
+        aggregate: bool,
+    ) -> Vec<String> {
+        let mut ref_manager = FindRefManager::new(dex, self.debug);
         let output = ref_manager.find_ref(find, true);
 
         let Some(out) = output else {
