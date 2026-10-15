@@ -118,17 +118,18 @@ impl<'a> StringLocator<'a> {
         self._debug_log("build_map", t_start, Some(count));
     }
 
-    fn _match_string_offset(&self, string: &str) -> Vec<u32> {
+    fn _match_string_offset(&self, string: &str) -> HashSet<u32> {
         let buf = self.base.buf;
         let strdata_start = self.strdata_start as usize;
         let strdata_end = self.strdata_end as usize;
         if strdata_start > strdata_end || strdata_end > buf.len() {
-            return Vec::new();
+            return HashSet::new();
         }
         let submem = &buf[strdata_start..strdata_end];
 
         let finder = Finder::new(string.as_bytes());
-        let mut results = Vec::new();
+        let stridx_map = &self.stridx_map;
+        let mut located_idx = HashSet::new();
 
         for match_ in finder.find_iter(submem) {
             let mut offset = strdata_start + match_ + string.len();
@@ -136,27 +137,23 @@ impl<'a> StringLocator<'a> {
             if offset < strdata_end {
                 let slice = &buf[offset..strdata_end];
                 if let Some(null_rel) = slice.iter().position(|&b| b == 0) {
-                    offset = offset + null_rel;
-                    results.push((offset + 1) as u32); // skip over 00 byte
+                    offset = offset + null_rel + 1; // skip over 00 byte
+                    if let Ok(pos) = stridx_map.binary_search_by_key(&(offset as u32), |&(data_off, _)| data_off) {
+                        if let Some(idx) = stridx_map[pos].1.checked_sub(1) {
+                            located_idx.insert(idx);
+                        }
+                    }
                 }
             }
         }
-        results
+        located_idx
     }
 
     pub fn locate(&self, string: &str) -> HashSet<u32> {
         let t_start = if self.base.debug { Some(Instant::now()) } else { None };
         // Note: _build_map needs &mut self but locate takes &self
         // The caller must ensure _build_map is called before locate
-        let stridx_map = &self.stridx_map;
-        let mut located_idx = HashSet::new();
-        for offset in self._match_string_offset(string) {
-            if let Ok(pos) = stridx_map.binary_search_by_key(&offset, |&(data_off, _)| data_off) {
-                if let Some(idx) = stridx_map[pos].1.checked_sub(1) {
-                    located_idx.insert(idx);
-                }
-            }
-        }
+        let located_idx = self._match_string_offset(string);
         self._debug_log("locate", t_start, Some(located_idx.len()));
         located_idx
     }
