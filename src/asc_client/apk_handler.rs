@@ -808,7 +808,7 @@ impl ApkHandler {
         };
 
         let mut entries = _parse_cd_dex_entries(&apk_buf);
-        entries.sort_by_key(|e| std::cmp::Reverse(e.comp_size as u64 + e.uncomp_size as u64 / 2));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.comp_size as u64 + e.uncomp_size as u64 * 2 / 3));
 
         if entries.is_empty() {
             return Vec::new();
