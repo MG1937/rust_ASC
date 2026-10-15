@@ -5,7 +5,7 @@
 
 use crate::asc_core::findrefs::locator::base_locator::{_debug_log, BaseLocator};
 use crate::asc_core::utils::tinydex::DEX;
-use regex::bytes::Regex;
+use memchr::memmem::Finder;
 use std::collections::HashSet;
 use std::time::Instant;
 
@@ -127,11 +127,11 @@ impl<'a> StringLocator<'a> {
         }
         let submem = &buf[strdata_start..strdata_end];
 
-        let pattern = Regex::new(string).unwrap();
+        let finder = Finder::new(string.as_bytes());
         let mut results = Vec::new();
 
-        for match_ in pattern.find_iter(submem) {
-            let mut offset = strdata_start + match_.end();
+        for match_ in finder.find_iter(submem) {
+            let mut offset = strdata_start + match_ + string.len();
             // find null terminator after the match
             if offset < strdata_end {
                 let slice = &buf[offset..strdata_end];
