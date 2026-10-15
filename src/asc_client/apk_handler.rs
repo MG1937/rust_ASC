@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use flate2::read::DeflateDecoder;
 use libdeflater::Decompressor;
+use memmap2::{Mmap, MmapOptions};
 
 use crate::asc_client::asc_handler::AscHandler;
 use crate::asc_core::findrefs::findrefs_manager::FindRefInput;
@@ -588,18 +589,14 @@ impl ApkHandler {
         }
     }
 
-    fn _read_apk(&self) -> Result<Vec<u8>, String> {
+    fn _read_apk(&self) -> Result<Mmap, String> {
         let fp = File::open(&self.apk_path)
             .map_err(|e| format!("cannot open APK: {}", e))?;
-        let capacity = fp
-            .metadata()
-            .map(|metadata| metadata.len() as usize)
-            .unwrap_or(0);
-        let mut apk = Vec::with_capacity(capacity);
-        (&fp)
-            .read_to_end(&mut apk)
-            .map_err(|e| format!("cannot read APK: {}", e))?;
-        Ok(apk)
+        unsafe {
+            MmapOptions::new()
+                .map(&fp)
+                .map_err(|e| format!("cannot memory-map APK: {}", e))
+        }
     }
 
     /// Search for the specified class across all DEX files in the APK, return DEX name and data

@@ -18,6 +18,7 @@ opt-level = 0
 # getclass keeps chunked flate2 decompression for cooperative early cancellation.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 libdeflater = "1.26.1"
+memmap2 = "0.9"
 cesu8 = "1.1.0"
 regex = "1"
 lazy_static = "1"
