@@ -234,10 +234,11 @@ fn _hi_mask(idxs: &HashSet<u32>) -> [u8; 256] {
 }
 
 fn _idx_mask(idxs: &HashSet<u32>) -> Vec<u8> {
-    let max_idx = idxs.iter().copied().max().unwrap_or(0) as usize;
-    let mut table = vec![0u8; max_idx + 1];
+    let mut table = vec![0u8; u16::MAX as usize + 1];
     for &idx in idxs {
-        table[idx as usize] = 1;
+        if idx <= u16::MAX as u32 {
+            table[idx as usize] = 1;
+        }
     }
     table
 }
@@ -295,7 +296,7 @@ impl<'a> CodeItemScanner<'a> {
         let check_idx = |start: usize| -> Option<u32> {
             if start + 4 > raw_len { return None; }
             let idx = u16::from_le_bytes([raw[start + 2], raw[start + 3]]) as u32;
-            if idx_mask.get(idx as usize) == Some(&1) { Some(idx) } else { None }
+            if idx_mask[idx as usize] != 0 { Some(idx) } else { None }
         };
 
         match opcode_values.len() {
@@ -337,7 +338,7 @@ impl<'a> CodeItemScanner<'a> {
                     } else {
                         u32::from_le_bytes([raw[start + 2], raw[start + 3], raw[start + 4], raw[start + 5]])
                     };
-                    if idx_mask.get(idx as usize) != Some(&1) { continue; }
+                    if idx_mask[idx as usize] == 0 { continue; }
                     matched_offset.push((start + off_start) as u32);
                     if mark { mark_idx.push(idx); }
                 }
