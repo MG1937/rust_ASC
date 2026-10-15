@@ -130,6 +130,7 @@ impl<'a> StringLocator<'a> {
         let finder = Finder::new(string.as_bytes());
         let stridx_map = &self.stridx_map;
         let mut located_idx = HashSet::new();
+        let mut last_offset = usize::MAX;
 
         for match_ in finder.find_iter(submem) {
             let mut offset = strdata_start + match_ + string.len();
@@ -138,6 +139,10 @@ impl<'a> StringLocator<'a> {
                 let slice = &buf[offset..strdata_end];
                 if let Some(null_rel) = memchr::memchr(0, slice) {
                     offset = offset + null_rel + 1; // skip over 00 byte
+                    if offset == last_offset {
+                        continue;
+                    }
+                    last_offset = offset;
                     if let Ok(pos) = stridx_map.binary_search_by_key(&(offset as u32), |&(data_off, _)| data_off) {
                         if let Some(idx) = stridx_map[pos].1.checked_sub(1) {
                             located_idx.insert(idx);
