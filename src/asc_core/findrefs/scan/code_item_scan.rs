@@ -123,14 +123,6 @@ fn _mask_table(values: &[u8]) -> [u8; 256] {
     table
 }
 
-fn _hi_mask(idxs: &HashSet<u32>) -> [u8; 256] {
-    let mut table = [0u8; 256];
-    for &idx in idxs {
-        table[((idx >> 8) & 0xff) as usize] = 1;
-    }
-    table
-}
-
 fn _idx_mask(idxs: &HashSet<u32>) -> Vec<u8> {
     let mut table = vec![0u8; u16::MAX as usize + 1];
     for &idx in idxs {
