@@ -112,6 +112,7 @@ impl<'a> StringLocator<'a> {
         };
         self.strdata_end = (payload_start + relative_end + 1) as u32;
         stridx_map.push((self.strdata_end, string_ids_size));
+        stridx_map.sort_unstable_by_key(|&(offset, _)| offset);
         self.parsed = true;
         let count = stridx_map.len();
         self._debug_log("build_map", t_start, Some(count));
