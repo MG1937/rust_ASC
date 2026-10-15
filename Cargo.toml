@@ -20,7 +20,6 @@ flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 libdeflater = { version = "1.26.1", features = ["use_rust_alloc"] }
 memmap2 = "0.9"
 cesu8 = "1.1.0"
-regex = "1"
 lazy_static = "1"
 apk-info-axml = "1.0.13"
 quick-xml = "0.36"
@@ -30,6 +29,7 @@ clap = "4"
 mimalloc = { version = "0.1", default-features = false }
 
 [dev-dependencies]
+regex = "1"
 adler2 = "2"
 sha1 = "0.10"
 tempfile = "3"
