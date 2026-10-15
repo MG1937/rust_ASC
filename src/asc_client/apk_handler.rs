@@ -821,7 +821,6 @@ impl ApkHandler {
         // Shared index counter for work stealing
         let work_queue = Arc::new(Mutex::new(0usize));
 
-        let results = Arc::new(Mutex::new(Vec::<(String, Vec<String>, f64, f64)>::new()));
         let find = Arc::new((*find).clone());
 
         let num_workers = std::cmp::min(num_entries, self.max_workers);
@@ -831,16 +830,16 @@ impl ApkHandler {
             let apk_buf = Arc::clone(&apk_buf);
             let entries = Arc::clone(&entries);
             let work_queue = Arc::clone(&work_queue);
-            let results = Arc::clone(&results);
             let find_type = find_type.to_string();
             let find = Arc::clone(&find);
 
             handles.push(thread::spawn(move || {
+                let mut worker_results = Vec::new();
                 loop {
                     let idx = {
                         let mut counter = work_queue.lock().unwrap();
                         if *counter >= num_entries {
-                            return;
+                            break;
                         }
                         let idx = *counter;
                         *counter += 1;
@@ -854,18 +853,19 @@ impl ApkHandler {
                         &*find,
                     );
                     if !lines.is_empty() {
-                        let mut res = results.lock().unwrap();
-                        res.push((name, lines, _inflate_us, _process_us));
+                        worker_results.push((name, lines, _inflate_us, _process_us));
                     }
                 }
+                worker_results
             }));
         }
 
+        let mut final_results = Vec::new();
         for h in handles {
-            let _ = h.join();
+            if let Ok(mut worker_results) = h.join() {
+                final_results.append(&mut worker_results);
+            }
         }
-
-        let mut final_results = results.lock().unwrap().clone();
 
         // Sort by entry name for deterministic output
         final_results.sort_by(|a, b| a.0.cmp(&b.0));
