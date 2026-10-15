@@ -233,6 +233,15 @@ fn _hi_mask(idxs: &HashSet<u32>) -> [u8; 256] {
     table
 }
 
+fn _idx_mask(idxs: &HashSet<u32>) -> Vec<u8> {
+    let max_idx = idxs.iter().copied().max().unwrap_or(0) as usize;
+    let mut table = vec![0u8; max_idx + 1];
+    for &idx in idxs {
+        table[idx as usize] = 1;
+    }
+    table
+}
+
 pub struct CodeItemScanner<'a> {
     // when we decide to scan code item, means we already build up the insn locator
     pub off_start: u32,
@@ -266,6 +275,7 @@ impl<'a> CodeItemScanner<'a> {
         let raw_len = raw.len();
         if raw_len < 4 { return; }
 
+        let idx_mask = _idx_mask(idxs);
         let check_idx = |start: usize| -> Option<u32> {
             if start + 2 + idx_width > raw_len { return None; }
             let idx = if idx_width == 2 {
@@ -273,7 +283,7 @@ impl<'a> CodeItemScanner<'a> {
             } else {
                 u32::from_le_bytes([raw[start + 2], raw[start + 3], raw[start + 4], raw[start + 5]])
             };
-            if idxs.contains(&idx) { Some(idx) } else { None }
+            if idx_mask.get(idx as usize) == Some(&1) { Some(idx) } else { None }
         };
 
         match opcode_values.len() {
@@ -315,7 +325,7 @@ impl<'a> CodeItemScanner<'a> {
                     } else {
                         u32::from_le_bytes([raw[start + 2], raw[start + 3], raw[start + 4], raw[start + 5]])
                     };
-                    if !idxs.contains(&idx) { continue; }
+                    if idx_mask.get(idx as usize) != Some(&1) { continue; }
                     matched_offset.push((start + off_start) as u32);
                     if mark { mark_idx.push(idx); }
                 }
