@@ -311,7 +311,7 @@ impl<'a> InsnLocator<'a> {
         let mut ret_table: Vec<Option<Vec<u32>>> = Vec::with_capacity(offsets.len());
         let insn_maps = &self.insn_maps;
         let buf = self.base.buf;
-        let mut method_bounds = self.method_bounds.clone();
+        let mut method_bounds = vec![0u32; self.method_bounds.len()];
 
         for &off in offsets {
             let bucket = off >> 4;
@@ -331,7 +331,11 @@ impl<'a> InsnLocator<'a> {
                     };
                     let first_midx = midxs[0];
                     let first_midx = first_midx as usize;
-                    let start_off = method_bounds[first_midx];
+                    let start_off = if method_bounds[first_midx] != 0 {
+                        method_bounds[first_midx]
+                    } else {
+                        self.method_bounds[first_midx]
+                    };
                     if start_off != 0 && insn_verify(buf, start_off as usize, off as usize) {
                         ret_table.push(Some(midxs));
                         method_bounds[first_midx] = off;
