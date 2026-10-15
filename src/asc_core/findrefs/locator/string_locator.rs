@@ -18,7 +18,7 @@ impl _STRUCT_I {
 
 pub struct StringLocator<'a> {
     pub base: BaseLocator<'a>,
-    pub stridx_map: std::collections::HashMap<u32, u32>, // {string_data_off : string_idx}
+    pub stridx_map: Vec<(u32, u32)>, // [(string_data_off, string_idx), ...]
     pub strdata_start: u32,
     pub strdata_end: u32,
     pub parsed: bool,
@@ -28,7 +28,7 @@ impl<'a> StringLocator<'a> {
     pub fn new(dex: &'a DEX) -> Self {
         StringLocator {
             base: BaseLocator::new(dex),
-            stridx_map: std::collections::HashMap::new(),
+            stridx_map: Vec::new(),
             strdata_start: 0,
             strdata_end: 0,
             parsed: false,
@@ -51,6 +51,7 @@ impl<'a> StringLocator<'a> {
         let (string_ids_off, string_ids_size) = self.base.dex.header.strings;
         let mut string_ids_off = string_ids_off as usize;
         let stridx_map = &mut self.stridx_map;
+        stridx_map.reserve(string_ids_size as usize + 1);
         let buf = self.base.buf;
         if string_ids_size == 0 {
             self.parsed = true;
@@ -83,7 +84,7 @@ impl<'a> StringLocator<'a> {
                 self._debug_log("build_map", t_start, Some(0));
                 return;
             }
-            stridx_map.insert(data_offset, idx);
+            stridx_map.push((data_offset, idx));
         }
         // Include the final string_data_item. The existing lookup maps a
         // match through the following string offset, so add an end sentinel
@@ -110,7 +111,8 @@ impl<'a> StringLocator<'a> {
             return;
         };
         self.strdata_end = (payload_start + relative_end + 1) as u32;
-        stridx_map.insert(self.strdata_end, string_ids_size);
+        stridx_map.push((self.strdata_end, string_ids_size));
+        stridx_map.sort_unstable_by_key(|&(offset, _)| offset);
         self.parsed = true;
         let count = stridx_map.len();
         self._debug_log("build_map", t_start, Some(count));
@@ -149,8 +151,8 @@ impl<'a> StringLocator<'a> {
         let stridx_map = &self.stridx_map;
         let mut located_idx = HashSet::new();
         for offset in self._match_string_offset(string) {
-            if let Some(&idx) = stridx_map.get(&offset) {
-                if let Some(idx) = idx.checked_sub(1) {
+            if let Ok(pos) = stridx_map.binary_search_by_key(&offset, |&(data_off, _)| data_off) {
+                if let Some(idx) = stridx_map[pos].1.checked_sub(1) {
                     located_idx.insert(idx);
                 }
             }
