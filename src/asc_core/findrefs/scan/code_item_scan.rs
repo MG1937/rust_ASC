@@ -275,14 +275,26 @@ impl<'a> CodeItemScanner<'a> {
         let raw_len = raw.len();
         if raw_len < 4 { return; }
 
+        if idx_width == 4 {
+            let check_idx = |start: usize| -> Option<u32> {
+                if start + 6 > raw_len { return None; }
+                let idx = u32::from_le_bytes([raw[start + 2], raw[start + 3], raw[start + 4], raw[start + 5]]);
+                if idxs.contains(&idx) { Some(idx) } else { None }
+            };
+            let op = opcode_values[0];
+            for start in memchr::memchr_iter(op, raw) {
+                if let Some(idx) = check_idx(start) {
+                    matched_offset.push((start + off_start) as u32);
+                    if mark { mark_idx.push(idx); }
+                }
+            }
+            return;
+        }
+
         let idx_mask = _idx_mask(idxs);
         let check_idx = |start: usize| -> Option<u32> {
-            if start + 2 + idx_width > raw_len { return None; }
-            let idx = if idx_width == 2 {
-                u16::from_le_bytes([raw[start + 2], raw[start + 3]]) as u32
-            } else {
-                u32::from_le_bytes([raw[start + 2], raw[start + 3], raw[start + 4], raw[start + 5]])
-            };
+            if start + 4 > raw_len { return None; }
+            let idx = u16::from_le_bytes([raw[start + 2], raw[start + 3]]) as u32;
             if idx_mask.get(idx as usize) == Some(&1) { Some(idx) } else { None }
         };
 
