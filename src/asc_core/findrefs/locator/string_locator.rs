@@ -136,7 +136,7 @@ impl<'a> StringLocator<'a> {
             // find null terminator after the match
             if offset < strdata_end {
                 let slice = &buf[offset..strdata_end];
-                if let Some(null_rel) = slice.iter().position(|&b| b == 0) {
+                if let Some(null_rel) = memchr::memchr(0, slice) {
                     offset = offset + null_rel + 1; // skip over 00 byte
                     if let Ok(pos) = stridx_map.binary_search_by_key(&(offset as u32), |&(data_off, _)| data_off) {
                         if let Some(idx) = stridx_map[pos].1.checked_sub(1) {
