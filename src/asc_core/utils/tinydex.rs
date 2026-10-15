@@ -808,6 +808,15 @@ impl DEX {
     }
 }
 
+impl Drop for DEX {
+    fn drop(&mut self) {
+        self.context.prototypes_cache.borrow_mut().clear();
+        self.context.methods_cache.borrow_mut().clear();
+        self.context.fields_cache.borrow_mut().clear();
+        self.context.classes_cache.borrow_mut().clear();
+    }
+}
+
 impl Clone for DexString {
     fn clone(&self) -> Self {
         DexString {
