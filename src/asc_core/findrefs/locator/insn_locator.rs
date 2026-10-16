@@ -153,7 +153,8 @@ impl<'a> InsnLocator<'a> {
             let (method_idx_diff, c) = read_uleb128_fast(data, pos as usize);
             pos += c as u32;
             method_idx += method_idx_diff as u32;
-            pos += read_uleb128_len(data, pos as usize) as u32;
+            let (_, c) = read_uleb128_fast(data, pos as usize);
+            pos += c as u32;
             let (code_off, c) = read_uleb128_fast(data, pos as usize);
             pos += c as u32;
             self._encoded_method_parse(data, code_off as u32, method_idx);
@@ -164,7 +165,8 @@ impl<'a> InsnLocator<'a> {
             let (method_idx_diff, c) = read_uleb128_fast(data, pos as usize);
             pos += c as u32;
             method_idx += method_idx_diff as u32;
-            pos += read_uleb128_len(data, pos as usize) as u32;
+            let (_, c) = read_uleb128_fast(data, pos as usize);
+            pos += c as u32;
             let (code_off, c) = read_uleb128_fast(data, pos as usize);
             pos += c as u32;
             self._encoded_method_parse(data, code_off as u32, method_idx);
