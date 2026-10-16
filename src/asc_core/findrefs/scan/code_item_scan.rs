@@ -124,9 +124,7 @@ fn _mask_table(values: &[u8]) -> [u8; 256] {
 }
 
 fn _idx_mask(idxs: &HashSet<u32>) -> Vec<u8> {
-    let mut table = Vec::with_capacity(u16::MAX as usize + 1);
-    unsafe { table.set_len(u16::MAX as usize + 1); }
-    table.fill(0);
+    let mut table = vec![0u8; u16::MAX as usize + 1];
     for &idx in idxs {
         if idx <= u16::MAX as u32 {
             table[idx as usize] = 1;
