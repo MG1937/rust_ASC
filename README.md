@@ -10,6 +10,8 @@ Repository links:
 - Rust implementation: [MG1937/rust_ASC](https://github.com/MG1937/rust_ASC)
 - Full-APK pseudocode exporter: [MG1937/radguard](https://github.com/MG1937/radguard)
 
+https://github.com/user-attachments/assets/f1f71a75-1eca-4647-89ce-406ed2c63c6b
+
 ## Features
 
 - Search code references for strings, types, methods, and fields across every DEX in an APK.
@@ -84,7 +86,7 @@ The following measurements use CLI commands with no cache, no preprocessing, and
 
 ## Full APK Pseudocode Export Benchmark
 
-Full-APK pseudocode export is provided through [MG1937/radguard](https://github.com/MG1937/radguard)'s public `export_to_directory` API and uses its shared parallel APK export pipeline.
+Full-APK pseudocode export is provided through [MG1937/radguard](https://github.com/MG1937/radguard)'s public `export_to_directory` API and uses its shared parallel APK export pipeline. The following benchmark fully decompiles **TencentQQ.apk** (383 MB, 41 DEX files).
 
 | Workers | Wall time | Speedup vs. 8 workers | Notes |
 | ---: | ---: | ---: | --- |
