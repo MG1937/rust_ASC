@@ -350,7 +350,9 @@ impl<'a> InsnLocator<'a> {
         }
 
         // dense table is fuzzy, insn range verify back to method verify stage! 20260617
-        self._debug_log("locate", t_start, Some(ret_table.len()));
+        if self.base.debug {
+            self._debug_log("locate", t_start, Some(ret_table.len()));
+        }
         ret_table
     }
 }
