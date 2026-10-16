@@ -330,12 +330,11 @@ impl<'a> InsnLocator<'a> {
             match slot {
                 _EMPTY_BUCKET => ret_table.push(None),
                 slot => {
-                    let midxs = if slot & _SHARED_BUCKET == 0 {
-                        vec![slot - 1]
+                    let first_midx = if slot & _SHARED_BUCKET == 0 {
+                        slot - 1
                     } else {
-                        self.insn_shared[(slot & !_SHARED_BUCKET) as usize].clone()
+                        self.insn_shared[(slot & !_SHARED_BUCKET) as usize][0]
                     };
-                    let first_midx = midxs[0];
                     let first_midx = first_midx as usize;
                     let start_off = if method_bounds[first_midx] != 0 {
                         method_bounds[first_midx]
@@ -343,6 +342,11 @@ impl<'a> InsnLocator<'a> {
                         self.method_bounds[first_midx]
                     };
                     if start_off != 0 && insn_verify(buf, start_off as usize, off as usize) {
+                        let midxs = if slot & _SHARED_BUCKET == 0 {
+                            vec![slot - 1]
+                        } else {
+                            self.insn_shared[(slot & !_SHARED_BUCKET) as usize].clone()
+                        };
                         ret_table.push(Some(midxs));
                         method_bounds[first_midx] = off;
                     } else {
