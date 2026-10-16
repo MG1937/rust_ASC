@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::time::Instant;
 
 use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
-use radguard::cli::{ExportOptions, export_to_directory};
+use radguard::cli::{ExportOptions, ExportProgress, export_to_directory};
 
 use crate::asc_client::apk_handler::ApkHandler;
 use crate::asc_client::asc_handler::AscHandler;
@@ -177,6 +177,30 @@ fn _handle_listclass(args: &ArgMatches) -> Result<(), String> {
     Ok(())
 }
 
+fn _export_progress(progress: ExportProgress) {
+    match progress {
+        ExportProgress::Activity { .. } | ExportProgress::DexInflated { .. } => {}
+        ExportProgress::Started {
+            total_dex_files,
+            worker_count,
+        } => eprintln!("APK export: {total_dex_files} DEX files, {worker_count} worker(s)"),
+        ExportProgress::DexWorking {
+            started_dex_files,
+            total_dex_files,
+            dex_number,
+            busy_workers,
+            idle_workers,
+            decompile_workers,
+            decompile_dex_files,
+            inflate_workers,
+        } => eprintln!(
+            "[apk {started_dex_files}/{total_dex_files} {:5.1}% working] classes{dex_number}.dex | busy={busy_workers} idle={idle_workers} decompile_total={decompile_workers} decompile_dex={decompile_dex_files} inflate={inflate_workers}",
+            progress.percentage(),
+        ),
+        ExportProgress::DexCompleted { .. } => {}
+    }
+}
+
 fn _handle_export(args: &ArgMatches) -> Result<(), String> {
     let t_start = Instant::now();
     let apk_path = args.get_one::<String>("apk_path").unwrap();
@@ -184,12 +208,12 @@ fn _handle_export(args: &ArgMatches) -> Result<(), String> {
     let debug = args.get_flag("debug");
     let thread = _get_worker_count(args)?;
 
-    let summary = export_to_directory(
-        apk_path,
-        output_directory,
-        ExportOptions::default().with_threads(thread),
-    )
-    .map_err(|error| format!("cannot export APK: {error}"))?;
+    let mut options = ExportOptions::default().with_threads(thread);
+    if debug {
+        options = options.with_progress(_export_progress);
+    }
+    let summary = export_to_directory(apk_path, output_directory, options)
+        .map_err(|error| format!("cannot export APK: {error}"))?;
 
     if debug {
         println!(

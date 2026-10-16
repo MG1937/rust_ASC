@@ -28,12 +28,14 @@ fn export_writes_all_apk_classes_to_the_required_output_directory() {
 
     let result = run_cli(&[
         "export",
+        "--debug",
         "--thread",
         "2",
         apk.to_str().unwrap(),
         output.to_str().unwrap(),
     ]);
     assert!(result.status.success(), "{}", stderr(&result));
+    assert!(stderr(&result).contains("APK export:"));
 
     let source = std::fs::read_to_string(output.join("example/Test.java")).unwrap();
     assert!(source.contains("class Test"), "{source}");
