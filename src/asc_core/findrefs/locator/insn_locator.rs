@@ -88,6 +88,7 @@ pub struct InsnLocator<'a> {
 
     // for insn verify... bugfix for insn mismatch 20260728
     pub method_bounds: Vec<u32>, // method_bounds[midx] = insn_off_start
+    pub max_midx: usize,
 }
 
 impl<'a> InsnLocator<'a> {
@@ -102,6 +103,7 @@ impl<'a> InsnLocator<'a> {
             code_item_start: 0,
             code_item_end: 0,
             method_bounds: vec![0; dex.header.methods.1 as usize],
+            max_midx: 0,
         };
         locator
     }
@@ -127,6 +129,7 @@ impl<'a> InsnLocator<'a> {
         let insn_bucket_end = (insn_off + insn_size * 2 - 1) >> 4;
 
         self.method_bounds[midx as usize] = insn_off;
+        self.max_midx = self.max_midx.max(midx as usize);
         self.insn_maps_build
             .push((insn_bucket_start, insn_bucket_end, midx));
     }
@@ -307,7 +310,7 @@ impl<'a> InsnLocator<'a> {
         let mut ret_table: Vec<Option<Vec<u32>>> = Vec::with_capacity(offsets.len());
         let insn_maps = &self.insn_maps;
         let buf = self.base.buf;
-        let mut method_bounds = vec![0u32; self.method_bounds.len()];
+        let mut method_bounds = vec![0u32; self.max_midx + 1];
 
         for &off in offsets {
             let bucket = off >> 4;
