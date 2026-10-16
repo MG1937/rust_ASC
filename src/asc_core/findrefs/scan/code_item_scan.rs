@@ -123,13 +123,22 @@ fn _mask_table(values: &[u8]) -> [u8; 256] {
     table
 }
 
+fn _idx_mask(idxs: &HashSet<u32>) -> Vec<u8> {
+    let mut table = vec![0u8; u16::MAX as usize + 1];
+    for &idx in idxs {
+        if idx <= u16::MAX as u32 {
+            table[idx as usize] = 1;
+        }
+    }
+    table
+}
+
 pub struct CodeItemScanner<'a> {
     // when we decide to scan code item, means we already build up the insn locator
     pub off_start: u32,
     pub off_end: u32,
     pub buf: &'a [u8],
     pub submem: &'a [u8],
-    pub idx_mask: Vec<u8>,
     pub mark_idx: Vec<u32>,
 }
 
@@ -143,7 +152,6 @@ impl<'a> CodeItemScanner<'a> {
             off_end,
             buf,
             submem: &buf[off_start as usize .. off_end as usize],
-            idx_mask: vec![0u8; u16::MAX as usize + 1],
             mark_idx: Vec::new(),
         }
     }
@@ -152,7 +160,7 @@ impl<'a> CodeItemScanner<'a> {
     // approach. For 1-4 opcode values, memchr uses SIMD internally. For larger sets
     // (field=28, method=12, type=7) fall back to mask-table loop.
     // The exact idx check below still runs on every survivor.
-    fn _scan_code_item_dense(&mut self, opcode_values: &[u8], idxs: &HashSet<u32>, idx_width: usize, mark: bool, matched_offset: &mut Vec<u32>, mark_idx: &mut Vec<u32>) {
+    fn _scan_code_item_dense(&self, opcode_values: &[u8], idxs: &HashSet<u32>, idx_width: usize, mark: bool, matched_offset: &mut Vec<u32>, mark_idx: &mut Vec<u32>) {
         let off_start = self.off_start as usize;
         let raw = self.submem;
         let raw_len = raw.len();
@@ -174,13 +182,7 @@ impl<'a> CodeItemScanner<'a> {
             return;
         }
 
-        self.idx_mask.fill(0);
-        for &idx in idxs {
-            if idx <= u16::MAX as u32 {
-                self.idx_mask[idx as usize] = 1;
-            }
-        }
-        let idx_mask = &self.idx_mask;
+        let idx_mask = _idx_mask(idxs);
         let check_idx = |start: usize| -> Option<u32> {
             if start + 4 > raw_len { return None; }
             let idx = u16::from_le_bytes([raw[start + 2], raw[start + 3]]) as u32;
