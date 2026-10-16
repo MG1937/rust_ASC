@@ -114,6 +114,7 @@ impl<'a> InsnLocator<'a> {
         _debug_log("InsnLocator", stage, t_start, count, self.base.debug);
     }
 
+    #[inline(always)]
     pub fn _encoded_method_parse(&mut self, data: &[u8], pos: u32, midx: u32) {
         if pos == 0 {
             // code off == 0 means no method body, we dont need to locate it, ignore
