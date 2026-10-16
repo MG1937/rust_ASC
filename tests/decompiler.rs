@@ -116,9 +116,9 @@ fn cli_on_stored_and_compressed_multidex_apk() {
         let apk_path = apk.to_str().unwrap();
         let search = run_cli(&[
             "findrefs",
-            apk_path,
-            "--threads",
+            "--thread",
             "2",
+            apk_path,
             "string",
             "token",
         ]);
@@ -128,7 +128,7 @@ fn cli_on_stored_and_compressed_multidex_apk() {
             4
         );
 
-        let source = run_cli(&["getclass", apk_path, "example.Test", "--threads", "2"]);
+        let source = run_cli(&["getclass", "--thread", "2", apk_path, "example.Test"]);
         assert!(source.status.success(), "{}", stderr(&source));
         assert!(String::from_utf8(source.stdout)
             .unwrap()

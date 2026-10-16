@@ -3,25 +3,12 @@
 use crate::asc_core::findrefs::locator::base_locator::{_debug_log, BaseLocator};
 use crate::asc_core::models::dvm_opcode::opcodes;
 use crate::asc_core::utils::leb128::{read_uleb128_fast, read_uleb128_len};
+use crate::asc_core::utils::structs::{_STRUCT_H, _STRUCT_I};
 use crate::asc_core::utils::tinydex::DEX;
 use std::time::Instant;
 
 const _EMPTY_BUCKET: u32 = 0;
 const _SHARED_BUCKET: u32 = 1 << 31;
-
-struct _STRUCT_I;
-impl _STRUCT_I {
-    fn unpack_from(buf: &[u8], off: usize) -> u32 {
-        u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
-    }
-}
-
-struct _STRUCT_H;
-impl _STRUCT_H {
-    fn unpack_from(buf: &[u8], off: usize) -> u16 {
-        u16::from_le_bytes([buf[off], buf[off + 1]])
-    }
-}
 
 // verify that bytes from start to end form a valid sequence of instructions
 // used as a secondary check after bucket-based lookup to avoid false positives

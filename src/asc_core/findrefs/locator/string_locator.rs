@@ -4,17 +4,11 @@
 // so 0x00 will be encoded to 0xC0 0x80
 
 use crate::asc_core::findrefs::locator::base_locator::{_debug_log, BaseLocator};
+use crate::asc_core::utils::structs::_STRUCT_I;
 use crate::asc_core::utils::tinydex::DEX;
 use memchr::memmem::Finder;
 use std::collections::HashSet;
 use std::time::Instant;
-
-struct _STRUCT_I;
-impl _STRUCT_I {
-    fn unpack_from(buf: &[u8], off: usize) -> Option<u32> {
-        Some(u32::from_le_bytes(buf.get(off..off + 4)?.try_into().ok()?))
-    }
-}
 
 pub struct StringLocator<'a> {
     pub base: BaseLocator<'a>,
@@ -67,7 +61,7 @@ impl<'a> StringLocator<'a> {
             return;
         }
         // might buggy.. r8 not specify the first string data off is the begging of all string data off, but usually it was...
-        let Some(strdata_start) = _STRUCT_I::unpack_from(buf, string_ids_off) else {
+        let Some(strdata_start) = _STRUCT_I::try_unpack_from(buf, string_ids_off) else {
             self.parsed = true;
             self._debug_log("build_map", t_start, Some(0));
             return;
@@ -75,7 +69,7 @@ impl<'a> StringLocator<'a> {
         self.strdata_start = strdata_start;
         let mut data_offset = 0u32;
         for idx in 0..string_ids_size {
-            data_offset = _STRUCT_I::unpack_from(buf, string_ids_off).unwrap();
+            data_offset = _STRUCT_I::try_unpack_from(buf, string_ids_off).unwrap();
             string_ids_off += 4;
             if data_offset as usize >= buf.len() {
                 self.stridx_map.clear();

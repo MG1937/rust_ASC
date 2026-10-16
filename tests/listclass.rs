@@ -12,7 +12,7 @@ use zip_fixture::{write_apk, CompressionMethod};
 
 fn run_cli(apk: &Path, args: &[&str]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_rust_ASC"));
-    command.arg("listclass").arg(apk).args(args);
+    command.arg("listclass").args(args).arg(apk);
     command.output().unwrap()
 }
 
@@ -71,7 +71,7 @@ fn cli_preserves_dex_order_for_stored_and_deflated_multidex() {
         );
         let output = run_cli(
             &apk,
-            &["--threads", "2", "-o", output_path.to_str().unwrap()],
+            &["--thread", "2", "-o", output_path.to_str().unwrap()],
         );
         assert!(output.status.success(), "{}", stderr(&output));
         assert!(output.stdout.is_empty());
@@ -133,7 +133,7 @@ fn dex041_container_lists_every_logical_member() {
 
     for compression in [CompressionMethod::Stored, CompressionMethod::Deflated] {
         write_apk(&apk, &[("classes.dex", &data)], compression);
-        let output = run_cli(&apk, &["--threads", "1"]);
+        let output = run_cli(&apk, &["--thread", "1"]);
         assert!(output.status.success(), "{}", stderr(&output));
         assert_eq!(
             stdout(&output),
@@ -164,7 +164,7 @@ fn worker_count_must_be_positive() {
     let apk = directory.path().join("fixture.apk");
     write_apk(&apk, &[("classes.dex", &data)], CompressionMethod::Stored);
 
-    let output = run_cli(&apk, &["--threads", "0"]);
+    let output = run_cli(&apk, &["--thread", "0"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("Worker count must be greater than zero"));
 }

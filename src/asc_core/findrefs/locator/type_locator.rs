@@ -2,16 +2,10 @@
 
 use crate::asc_core::findrefs::locator::base_locator::{_debug_log, BaseLocator};
 use crate::asc_core::findrefs::locator::string_locator::StringLocator;
+use crate::asc_core::utils::structs::_STRUCT_I;
 use crate::asc_core::utils::tinydex::DEX;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
-
-struct _STRUCT_I;
-impl _STRUCT_I {
-    fn unpack_from(buf: &[u8], off: usize) -> u32 {
-        u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]])
-    }
-}
 
 pub struct TypeLocator<'a> {
     pub base: BaseLocator<'a>,

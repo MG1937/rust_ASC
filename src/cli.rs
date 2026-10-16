@@ -3,7 +3,8 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::time::Instant;
 
-use clap::{value_parser, Arg, ArgAction, ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command, value_parser};
+use radguard::cli::{ExportOptions, export_to_directory};
 
 use crate::asc_client::apk_handler::ApkHandler;
 use crate::asc_client::asc_handler::AscHandler;
@@ -57,8 +58,7 @@ fn _build_member_find(
         ));
     }
 
-    let class = _normalize_class_query(clz, clz_fuzzy)?
-        .map(|value| (value, !clz_fuzzy));
+    let class = _normalize_class_query(clz, clz_fuzzy)?.map(|value| (value, !clz_fuzzy));
     match key {
         "method" => Ok(FindRefInput {
             string: None,
@@ -95,7 +95,9 @@ fn _get_find_query(args: &ArgMatches) -> Result<(String, FindRefInput), String> 
         },
         "method" | "field" => _build_member_find(
             find_type,
-            find_args.get_one::<String>("class_name").map(String::as_str),
+            find_args
+                .get_one::<String>("class_name")
+                .map(String::as_str),
             find_args.get_flag("fuzzy_class"),
             find_args.get_one::<String>("name").map(String::as_str),
         )?,
@@ -117,12 +119,9 @@ fn _handle_getclass(args: &ArgMatches) -> Result<(), String> {
     let apk_path = args.get_one::<String>("apk_path").unwrap();
     let dalvik_class = _format_class_name(args.get_one::<String>("dalvik_class").unwrap())?;
     let debug = args.get_flag("debug");
-    let threads = *args.get_one::<usize>("threads").unwrap();
-    if threads == 0 {
-        return Err("Worker count must be greater than zero".to_owned());
-    }
+    let thread = _get_worker_count(args)?;
 
-    let apk_handler = ApkHandler::new(apk_path, debug, threads);
+    let apk_handler = ApkHandler::new(apk_path, debug, thread);
     let (dex_name, dex_buf) = apk_handler
         .get_class_dex(&dalvik_class)
         .ok_or_else(|| format!("Class {dalvik_class} not found in APK."))?;
@@ -154,9 +153,9 @@ fn _handle_listclass(args: &ArgMatches) -> Result<(), String> {
     let t_start = Instant::now();
     let apk_path = args.get_one::<String>("apk_path").unwrap();
     let debug = args.get_flag("debug");
-    let threads = *args.get_one::<usize>("threads").unwrap();
+    let thread = _get_worker_count(args)?;
     let prefix = args.get_one::<String>("prefix").map(String::as_str);
-    let names = ApkHandler::new(apk_path, debug, threads).list_classes(prefix)?;
+    let names = ApkHandler::new(apk_path, debug, thread).list_classes(prefix)?;
     let text = if names.is_empty() {
         String::new()
     } else {
@@ -170,6 +169,33 @@ fn _handle_listclass(args: &ArgMatches) -> Result<(), String> {
     }
 
     if debug {
+        println!(
+            "[DEBUG] Total Execution Time: {:.2} us",
+            t_start.elapsed().as_secs_f64() * 1_000_000.0
+        );
+    }
+    Ok(())
+}
+
+fn _handle_export(args: &ArgMatches) -> Result<(), String> {
+    let t_start = Instant::now();
+    let apk_path = args.get_one::<String>("apk_path").unwrap();
+    let output_directory = args.get_one::<String>("output_directory").unwrap();
+    let debug = args.get_flag("debug");
+    let thread = _get_worker_count(args)?;
+
+    let summary = export_to_directory(
+        apk_path,
+        output_directory,
+        ExportOptions::default().with_threads(thread),
+    )
+    .map_err(|error| format!("cannot export APK: {error}"))?;
+
+    if debug {
+        println!(
+            "[DEBUG] Exported {} classes from {} DEX file(s) to {} with {} worker(s)",
+            summary.classes, summary.dex_files, output_directory, thread,
+        );
         println!(
             "[DEBUG] Total Execution Time: {:.2} us",
             t_start.elapsed().as_secs_f64() * 1_000_000.0
@@ -200,12 +226,9 @@ fn _handle_findrefs(args: &ArgMatches) -> Result<(), String> {
     let t_start = Instant::now();
     let apk_path = args.get_one::<String>("apk_path").unwrap();
     let debug = args.get_flag("debug");
-    let threads = *args.get_one::<usize>("threads").unwrap();
-    if threads == 0 {
-        return Err("Worker count must be greater than zero".to_owned());
-    }
+    let thread = _get_worker_count(args)?;
     let (find_type, find) = _get_find_query(args)?;
-    let apk_handler = ApkHandler::new(apk_path, debug, threads);
+    let apk_handler = ApkHandler::new(apk_path, debug, thread);
     let mut output_fp = args
         .subcommand()
         .and_then(|(_, values)| values.get_one::<String>("output"))
@@ -236,6 +259,23 @@ fn _handle_findrefs(args: &ArgMatches) -> Result<(), String> {
     Ok(())
 }
 
+fn _default_worker_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+}
+
+fn _get_worker_count(args: &ArgMatches) -> Result<usize, String> {
+    let thread = args
+        .get_one::<usize>("thread")
+        .copied()
+        .unwrap_or_else(_default_worker_count);
+    if thread == 0 {
+        return Err("Worker count must be greater than zero".to_owned());
+    }
+    Ok(thread)
+}
+
 fn common_args(command: Command) -> Command {
     command
         .arg(
@@ -245,12 +285,10 @@ fn common_args(command: Command) -> Command {
                 .help("Enable debug profiling output."),
         )
         .arg(
-            Arg::new("threads")
-                .long("threads")
-                .visible_alias("thread")
+            Arg::new("thread")
+                .long("thread")
                 .value_parser(value_parser!(usize))
-                .default_value("8")
-                .help("Worker thread count."),
+                .help("Worker thread count. Defaults to available CPU count."),
         )
 }
 
@@ -333,9 +371,10 @@ pub fn _build_main_parser() -> Command {
         .about("ASC tooling entry.")
         .after_help(
             "examples:\n  rust_ASC getclass app.apk Lcom/poc/Main; -o Main.java\n  \
-             rust_ASC getclass app.apk com.poc.Main --threads 16\n  \
+             rust_ASC getclass --thread 16 app.apk com.poc.Main\n  \
              rust_ASC listclass app.apk -o classes.txt\n  \
-             rust_ASC listclass app.apk --prefix com.poc\n  \
+             rust_ASC listclass --prefix com.poc app.apk\n  \
+             rust_ASC export --thread 16 app.apk output\n  \
              rust_ASC getmanifest app.apk -o AndroidManifest.xml\n  \
              rust_ASC findrefs app.apk string token -o string_refs.txt\n  \
              rust_ASC findrefs app.apk type com.poc.Main\n  \
@@ -376,6 +415,16 @@ pub fn _build_main_parser() -> Command {
                 )
                 .arg(Arg::new("apk_path").required(true).help("Path to the input APK file.")),
         ))
+        .subcommand(common_args(
+            Command::new("export")
+                .about("Export pseudocode for every class in an APK into an output directory.")
+                .arg(Arg::new("apk_path").required(true).help("Path to the input APK file."))
+                .arg(
+                    Arg::new("output_directory")
+                        .required(true)
+                        .help("Directory where exported .java pseudocode files are written."),
+                ),
+        ))
         .subcommand(
             Command::new("getmanifest")
                 .about("Decode AndroidManifest.xml from APK and print it as XML.")
@@ -407,6 +456,7 @@ where
     match matches.subcommand() {
         Some(("getclass", args)) => _handle_getclass(args),
         Some(("listclass", args)) => _handle_listclass(args),
+        Some(("export", args)) => _handle_export(args),
         Some(("getmanifest", args)) => _handle_getmanifest(args),
         Some(("findrefs", args)) => _handle_findrefs(args),
         _ => Err("Unknown command".to_owned()),

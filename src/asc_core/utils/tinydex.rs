@@ -1,60 +1,11 @@
 use crate::asc_core::utils::leb128::read_uleb128_fast;
+use crate::asc_core::utils::structs::{_STRUCT_H, _STRUCT_HHI, _STRUCT_HHHHII, _STRUCT_I, _STRUCT_III};
 use cesu8::from_java_cesu8;
 use memchr::memchr;
 use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
-
-struct _STRUCT_I;
-impl _STRUCT_I {
-    fn unpack_from(buf: &[u8], off: usize) -> u32 {
-        u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
-    }
-}
-
-struct _STRUCT_H;
-impl _STRUCT_H {
-    fn unpack_from(buf: &[u8], off: usize) -> u16 {
-        u16::from_le_bytes([buf[off], buf[off + 1]])
-    }
-}
-
-struct _STRUCT_III;
-impl _STRUCT_III {
-    fn unpack_from(buf: &[u8], off: usize) -> (u32, u32, u32) {
-        (
-            u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]),
-            u32::from_le_bytes([buf[off + 4], buf[off + 5], buf[off + 6], buf[off + 7]]),
-            u32::from_le_bytes([buf[off + 8], buf[off + 9], buf[off + 10], buf[off + 11]]),
-        )
-    }
-}
-
-struct _STRUCT_HHI;
-impl _STRUCT_HHI {
-    fn unpack_from(buf: &[u8], off: usize) -> (u16, u16, u32) {
-        (
-            u16::from_le_bytes([buf[off], buf[off + 1]]),
-            u16::from_le_bytes([buf[off + 2], buf[off + 3]]),
-            u32::from_le_bytes([buf[off + 4], buf[off + 5], buf[off + 6], buf[off + 7]]),
-        )
-    }
-}
-
-struct _STRUCT_HHHHII;
-impl _STRUCT_HHHHII {
-    fn unpack_from(buf: &[u8], off: usize) -> (u16, u16, u16, u16, u32, u32) {
-        (
-            u16::from_le_bytes([buf[off], buf[off + 1]]),
-            u16::from_le_bytes([buf[off + 2], buf[off + 3]]),
-            u16::from_le_bytes([buf[off + 4], buf[off + 5]]),
-            u16::from_le_bytes([buf[off + 6], buf[off + 7]]),
-            u32::from_le_bytes([buf[off + 8], buf[off + 9], buf[off + 10], buf[off + 11]]),
-            u32::from_le_bytes([buf[off + 12], buf[off + 13], buf[off + 14], buf[off + 15]]),
-        )
-    }
-}
 
 pub fn _decode_mutf8_fallback(raw: &[u8]) -> String {
     match from_java_cesu8(raw) {

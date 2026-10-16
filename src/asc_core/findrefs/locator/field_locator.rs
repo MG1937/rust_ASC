@@ -3,27 +3,10 @@
 use crate::asc_core::findrefs::locator::base_locator::{_debug_log, BaseLocator};
 use crate::asc_core::findrefs::locator::string_locator::StringLocator;
 use crate::asc_core::findrefs::locator::type_locator::TypeLocator;
+use crate::asc_core::utils::structs::{_STRUCT_HHI, _STRUCT_I};
 use crate::asc_core::utils::tinydex::DEX;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
-
-struct _STRUCT_HHI;
-impl _STRUCT_HHI {
-    fn unpack_from(buf: &[u8], off: usize) -> (u16, u16, u32) {
-        (
-            u16::from_le_bytes([buf[off], buf[off+1]]),
-            u16::from_le_bytes([buf[off+2], buf[off+3]]),
-            u32::from_le_bytes([buf[off+4], buf[off+5], buf[off+6], buf[off+7]]),
-        )
-    }
-}
-
-struct _STRUCT_I;
-impl _STRUCT_I {
-    fn unpack_from(buf: &[u8], off: usize) -> u32 {
-        u32::from_le_bytes([buf[off], buf[off+1], buf[off+2], buf[off+3]])
-    }
-}
 
 #[derive(Clone)]
 pub struct FieldFind {

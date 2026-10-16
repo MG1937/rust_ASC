@@ -7,7 +7,7 @@ use apk_info_axml::AXML;
 use quick_xml::events::Event;
 use quick_xml::{Reader, Writer};
 
-use crate::asc_client::apk_handler::_extract_zip_entry;
+use crate::asc_client::apk::loader::_extract_zip_entry;
 
 fn _quiet_loguru() {
     // No-op in Rust: there is no loguru/androguard to silence.
@@ -26,8 +26,7 @@ fn _format_xml(xml: &str, pretty: bool) -> Result<String, String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Eof) => break,
-            Ok(Event::Text(text))
-                if text.iter().all(|byte| byte.is_ascii_whitespace()) => {}
+            Ok(Event::Text(text)) if text.iter().all(|byte| byte.is_ascii_whitespace()) => {}
             Ok(event) => writer
                 .write_event(event)
                 .map_err(|e| format!("cannot format AndroidManifest.xml: {}", e))?,
