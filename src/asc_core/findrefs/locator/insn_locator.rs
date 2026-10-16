@@ -289,11 +289,14 @@ impl<'a> InsnLocator<'a> {
             self.code_item_end = (max_bucket + 1) << 4;
         }
         self.parsed = true;
-        let mapped_count = self
-            .insn_maps
-            .iter()
-            .filter(|&&slot| slot != _EMPTY_BUCKET)
-            .count();
+        let mapped_count = if self.base.debug {
+            self.insn_maps
+                .iter()
+                .filter(|&&slot| slot != _EMPTY_BUCKET)
+                .count()
+        } else {
+            0
+        };
         self._debug_log("parse", t_start, Some(mapped_count));
     }
 
