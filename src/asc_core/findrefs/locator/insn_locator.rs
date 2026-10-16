@@ -11,7 +11,6 @@ const _SHARED_BUCKET: u32 = 1 << 31;
 
 struct _STRUCT_I;
 impl _STRUCT_I {
-    #[inline(always)]
     fn unpack_from(buf: &[u8], off: usize) -> u32 {
         u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
     }
@@ -19,7 +18,6 @@ impl _STRUCT_I {
 
 struct _STRUCT_H;
 impl _STRUCT_H {
-    #[inline(always)]
     fn unpack_from(buf: &[u8], off: usize) -> u16 {
         u16::from_le_bytes([buf[off], buf[off + 1]])
     }
