@@ -307,7 +307,7 @@ impl<'a> InsnLocator<'a> {
         let mut ret_table: Vec<Option<Vec<u32>>> = Vec::with_capacity(offsets.len());
         let insn_maps = &self.insn_maps;
         let buf = self.base.buf;
-        let mut method_bounds = vec![0u32; self.method_bounds.len()];
+        let mut method_bounds = vec![0u32; self.base.dex.header.methods.1 as usize];
 
         for &off in offsets {
             let bucket = off >> 4;
