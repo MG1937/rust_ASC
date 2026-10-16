@@ -826,7 +826,7 @@ impl ApkHandler {
         let num_workers = std::cmp::min(num_entries, self.max_workers);
         let mut handles = Vec::with_capacity(num_workers);
 
-        for _ in 0..num_workers {
+        for _ in 1..num_workers {
             let apk_buf = Arc::clone(&apk_buf);
             let entries = Arc::clone(&entries);
             let work_queue = Arc::clone(&work_queue);
@@ -861,6 +861,23 @@ impl ApkHandler {
         }
 
         let mut final_results = Vec::new();
+        if num_workers != 0 {
+            loop {
+                let idx = {
+                    let mut counter = work_queue.lock().unwrap();
+                    if *counter >= num_entries {
+                        break;
+                    }
+                    let idx = *counter;
+                    *counter += 1;
+                    idx
+                };
+                let result = _findrefs_worker(&apk_buf, &entries[idx], find_type, &find);
+                if !result.1.is_empty() {
+                    final_results.push(result);
+                }
+            }
+        }
         for h in handles {
             if let Ok(mut worker_results) = h.join() {
                 final_results.append(&mut worker_results);
