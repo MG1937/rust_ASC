@@ -547,23 +547,24 @@ fn _findrefs_worker(
     entry: &DexEntry,
     find_type: &str,
     find: &FindRefInput,
+    debug: bool,
 ) -> (String, Vec<String>, f64, f64) {
-    let t0 = Instant::now();
+    let t0 = if debug { Some(Instant::now()) } else { None };
     let data = _inflate_dex_libdeflater(buf, entry).unwrap_or_default();
-    let t1 = Instant::now();
+    let t1 = if debug { Some(Instant::now()) } else { None };
 
     let mut lines = Vec::new();
     let handler = AscHandler::new(false);
     for (dex_name, dex_buf) in into_logical_dex_buffers(&entry.name, data) {
         lines.extend(handler.findrefs_vec(&dex_name, dex_buf, find_type, find, true));
     }
-    let t2 = Instant::now();
+    let t2 = if debug { Some(Instant::now()) } else { None };
 
     (
         entry.name.clone(),
         lines,
-        (t1 - t0).as_secs_f64() * 1_000_000.0,
-        (t2 - t1).as_secs_f64() * 1_000_000.0,
+        t0.zip(t1).map(|(start, end)| (end - start).as_secs_f64() * 1_000_000.0).unwrap_or(0.0),
+        t1.zip(t2).map(|(start, end)| (end - start).as_secs_f64() * 1_000_000.0).unwrap_or(0.0),
     )
 }
 
@@ -832,6 +833,7 @@ impl ApkHandler {
             let work_queue = Arc::clone(&work_queue);
             let find_type = find_type.to_string();
             let find = Arc::clone(&find);
+            let debug = self.debug;
 
             handles.push(thread::spawn(move || {
                 let mut worker_results = Vec::new();
@@ -851,6 +853,7 @@ impl ApkHandler {
                         &entries[idx],
                         &find_type,
                         &*find,
+                        debug,
                     );
                     if !lines.is_empty() {
                         worker_results.push((name, lines, _inflate_us, _process_us));
@@ -872,7 +875,7 @@ impl ApkHandler {
                     *counter += 1;
                     idx
                 };
-                let result = _findrefs_worker(&apk_buf, &entries[idx], find_type, &find);
+                let result = _findrefs_worker(&apk_buf, &entries[idx], find_type, &find, self.debug);
                 if !result.1.is_empty() {
                     final_results.push(result);
                 }
