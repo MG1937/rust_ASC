@@ -26,6 +26,7 @@ impl _STRUCT_H {
 // verify that bytes from start to end form a valid sequence of instructions
 // used as a secondary check after bucket-based lookup to avoid false positives
 // python ASC use regex for native insn verify speed up, we dont need it in rust
+#[inline(never)]
 pub fn insn_verify(buf: &[u8], start: usize, end: usize) -> bool {
     let mut pos = start;
     while pos < end {
