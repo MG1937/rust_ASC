@@ -2,6 +2,7 @@
 
 // DONT PARSE IT, JUST FUCKING MATCH IT!!!!!
 // VERY FKING FAST!
+#[inline(always)]
 pub fn read_uleb128_fast(data: &[u8], pos: usize) -> (u64, usize) {
     let b = data[pos];
     if b < 128 {
@@ -75,6 +76,7 @@ pub fn write_sleb128(mut value: i64) -> Vec<u8> {
     out
 }
 
+#[inline(always)]
 pub fn read_uleb128_len(data: &[u8], pos: usize) -> usize {
     if data[pos] < 128 { return 1; }
     if data[pos + 1] < 128 { return 2; }
