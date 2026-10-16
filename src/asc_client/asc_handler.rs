@@ -49,8 +49,8 @@ impl AscHandler {
 
     fn _format_matched_name(&self, dex: &DEX, find_type: &str, idx: usize) -> String {
         match find_type {
-            "string" => dex.get_string(idx).value.clone(),
-            "type" => dex.get_type(idx as u32).descriptor.clone(),
+            "string" => dex.get_string(idx).value,
+            "type" => dex.get_type(idx as u32).descriptor,
             "method" => {
                 let method = dex.get_method(idx as u32);
                 format!("{}->{}", method.cls().fullname, method.name())
