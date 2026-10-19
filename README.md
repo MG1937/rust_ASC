@@ -118,37 +118,45 @@ Configure it in your MCP client:
 
 ### rust_ASC vs JADX
 
-Same APKs, same workloads. JADX figures are from the ASC benchmark suite.
+Same workloads. JADX figures come from the ASC benchmark suite.
 
 **Global string cross-reference search**
 
-| Tool | TelegramX (59 MB) | WhatsApp (130 MB) | Grab (228 MB) |
-| --- | ---: | ---: | ---: |
-| rust_ASC | 55 ms | 67 ms | 118 ms |
-| JADX | 20 s | 32 s | 2m14s |
+| | TelegramX (59 MB) | WhatsApp (130 MB) | Grab (228 MB) | TencentQQ (318 MB) |
+| --- | ---: | ---: | ---: | ---: |
+| rust_ASC | 55 ms | 67 ms | 118 ms | 136 ms |
+| JADX | 20 s | 32 s | 2m14s | 8m2s |
+
+rust_ASC is 364x to 3,544x faster than JADX for global string xref search.
 
 **Single-class decompile**
 
-| Tool | TelegramX (59 MB) | WhatsApp (130 MB) | Grab (228 MB) |
-| --- | ---: | ---: | ---: |
-| rust_ASC | 79 ms | 70 ms | 111 ms |
-| JADX | 6 s | 15 s | 37 s |
+| | TelegramX (59 MB) | WhatsApp (130 MB) | Grab (228 MB) | TencentQQ (318 MB) |
+| --- | ---: | ---: | ---: | ---: |
+| rust_ASC | 79 ms | 70 ms | 111 ms | 118 ms |
+| JADX | 6 s | 15 s | 37 s | 1m32s |
+
+rust_ASC is 76x to 780x faster than JADX for single-class decompile.
 
 **CLI peak memory**
 
-| Tool | TelegramX (59 MB) | WhatsApp (130 MB) | Grab (228 MB) |
-| --- | ---: | ---: | ---: |
-| rust_ASC | 32 MB | 116 MB | 358 MB |
-| JADX | 1,016 MB | 2.1 GB | 7.1 GB |
+| | TelegramX (59 MB) | WhatsApp (130 MB) | Grab (228 MB) | TencentQQ (318 MB) |
+| --- | ---: | ---: | ---: | ---: |
+| rust_ASC | 32 MB | 116 MB | 358 MB | 443 MB |
+| JADX | 1,016 MB | 2.1 GB | 7.1 GB | 13.2 GB |
+
+rust_ASC uses 19x to 32x less memory than JADX for CLI operation.
 
 **Disk cache**
 
-| Tool | TelegramX | WhatsApp | Grab |
-| --- | ---: | ---: | ---: |
-| rust_ASC | 0 MB | 0 MB | 0 MB |
-| JADX | 119 MB | 30 MB | 127 MB |
+| | TelegramX | WhatsApp | Grab | TencentQQ |
+| --- | ---: | ---: | ---: | ---: |
+| rust_ASC | 0 MB | 0 MB | 0 MB | 0 MB |
+| JADX | 119 MB | 30 MB | 127 MB | 322 MB |
 
-JADX spends seconds to minutes per operation and gigabytes of memory. rust_ASC answers in tens to low hundreds of milliseconds and keeps a small resident set. Because every query is cheap and stateless, a user or an AI agent can move across dozens or hundreds of APKs on a weak machine, where JADX would need several GB just to preload one.
+rust_ASC stays fully in memory with zero disk cache, while JADX writes up to 322 MB.
+
+Because every query is stateless, an agent can analyze hundreds of APKs at once, even on weak machines.
 
 ### rust_ASC CLI details
 
