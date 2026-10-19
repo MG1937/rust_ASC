@@ -1,8 +1,10 @@
 # rust_ASC
 
-`rust_ASC` is a one-to-one Rust port of [MG1937/ASC](https://github.com/MG1937/ASC), the Python implementation of ASC. The Rust implementation preserves the corresponding source layout, data structures, control flow, function roles, and runtime behavior while targeting substantially lower command-line latency and memory overhead.
+**rust_ASC is a stateless Android APK and DEX decompiler with millisecond cross-reference search, written in Rust.** It queries the compiled artifact directly instead of building a global index, so there is no preprocessing step, no persistent cache, and no multi-gigabyte memory footprint.
 
-On the reported CLI workloads below, `rust_ASC` is approximately **10× faster** than the Python ASC implementation. It remains stateless: no preprocessing is required before a query, and it writes no persistent cache to disk.
+It is the Rust implementation of [MG1937/ASC](https://github.com/MG1937/ASC), the Python reference project, and preserves the same source layout, data structures, control flow and runtime behavior. On the CLI workloads below it is approximately **10× faster** than the Python version.
+
+Presented at Black Hat Europe Arsenal: [Droid ASC: R8 Compiler Optimization as a DeCompiler Primitive](https://blackhat.com/europe/arsenal/schedule/index.html#droid-asc-r8-compiler-optimization-as-a-decompiler-primitive-54834).
 
 Repository links:
 
@@ -20,20 +22,38 @@ https://github.com/user-attachments/assets/f1f71a75-1eca-4647-89ce-406ed2c63c6b
 - Export pseudocode for every class in an APK with the public API of [MG1937/radguard](https://github.com/MG1937/radguard).
 - Handle multi-DEX APKs and DEX 041 logical containers.
 - Use memory-mapped APK access and no on-disk cache.
-- Expose four read-only, structured MCP tools over stdio, suitable for Pi CodeMode.
+- Expose CLI queries as MCP tools over stdio.
+
+## Why it is fast
+
+- Stateless by design: no preprocessing, no global index build, no disk cache.
+- The APK is memory-mapped, and only the DEX entries a query needs are inflated.
+- Cross-DEX scans run in parallel, so a search over dozens of DEX files stays in the millisecond range.
+- R8 output is already highly structured. Searches jump to candidate offsets directly instead of rebuilding a bloated cross-reference database.
+- On a hit, rust_ASC rebuilds a minimal self-consistent DEX in memory and decompiles it immediately.
 
 ## Build
+
+`radguard` is a Git submodule. Clone it with the main repository:
+
+```bash
+git clone --recurse-submodules https://github.com/MG1937/rust_ASC.git
+cd rust_ASC
+cargo build --release
+```
+
+For an existing checkout:
 
 ```bash
 git submodule update --init --recursive
 cargo build --release
-
-# Build without MCP and its dedicated dependencies.
-cargo build --release --no-default-features
 ```
 
-MCP is enabled by default, including CI/releases. `--no-default-features`
-removes only MCP and its dedicated dependencies; existing CLI commands remain.
+MCP is enabled by default. Build only the original CLI with:
+
+```bash
+cargo build --release --no-default-features
+```
 
 The executable is written to:
 
@@ -79,29 +99,9 @@ rust_ASC export --thread 10 --debug app.apk output
 
 ## MCP
 
-Read-only MCP tools over stdio, designed for CodeMode:
-`getclass`, `listclass`, `getmanifest`, and `findrefs`.
+`rust_ASC mcp` runs a stdio MCP server that exposes the CLI commands as tools: `getclass`, `listclass`, `getmanifest`, and `findrefs`. Each call spawns a fresh CLI process, so behavior always matches the command line.
 
-Configure:
-
-Ask your agent to install and configure ASC, or follow the manual setup below.
-
-<details>
-<summary>Agent setup instructions</summary>
-
-1. Confirm the target MCP client and user- or project-level configuration scope.
-2. Locate an MCP-enabled `rust_ASC` executable. If needed, run
-   `git submodule update --init --recursive` followed by `cargo install --path . --locked`
-   from this repository. MCP is enabled by default; the executable is normally installed
-   to `~/.cargo/bin/rust_ASC`.
-3. Register `asc` as a stdio server using the executable's absolute path and
-   `args: ["mcp"]`. Use the client's native configuration format and preserve existing settings.
-4. Reload or restart the client and verify that the four tools listed above are available.
-
-</details>
-
-For manual setup, replace `/absolute/path/to/rust_ASC` with your executable path
-and follow your client's MCP configuration instructions:
+Configure it in your MCP client:
 
 ```json
 {
@@ -114,7 +114,43 @@ and follow your client's MCP configuration instructions:
 }
 ```
 
-## CLI Benchmark
+## Benchmark
+
+### rust_ASC vs JADX
+
+Same APKs, same workloads. JADX figures are from the ASC benchmark suite.
+
+**Global string cross-reference search**
+
+| Tool | TelegramX (59 MB) | WhatsApp (130 MB) | Grab (228 MB) |
+| --- | ---: | ---: | ---: |
+| rust_ASC | 55 ms | 67 ms | 118 ms |
+| JADX | 20 s | 32 s | 2m14s |
+
+**Single-class decompile**
+
+| Tool | TelegramX (59 MB) | WhatsApp (130 MB) | Grab (228 MB) |
+| --- | ---: | ---: | ---: |
+| rust_ASC | 79 ms | 70 ms | 111 ms |
+| JADX | 6 s | 15 s | 37 s |
+
+**CLI peak memory**
+
+| Tool | TelegramX (59 MB) | WhatsApp (130 MB) | Grab (228 MB) |
+| --- | ---: | ---: | ---: |
+| rust_ASC | 32 MB | 116 MB | 358 MB |
+| JADX | 1,016 MB | 2.1 GB | 7.1 GB |
+
+**Disk cache**
+
+| Tool | TelegramX | WhatsApp | Grab |
+| --- | ---: | ---: | ---: |
+| rust_ASC | 0 MB | 0 MB | 0 MB |
+| JADX | 119 MB | 30 MB | 127 MB |
+
+JADX spends seconds to minutes per operation and gigabytes of memory. rust_ASC answers in tens to low hundreds of milliseconds and keeps a small resident set. Because every query is cheap and stateless, a user or an AI agent can move across dozens or hundreds of APKs on a weak machine, where JADX would need several GB just to preload one.
+
+### rust_ASC CLI details
 
 The following measurements use CLI commands with no cache, no preprocessing, and direct searches of every code reference to the string `https://`.
 

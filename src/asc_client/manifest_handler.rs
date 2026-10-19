@@ -46,13 +46,8 @@ pub fn get_manifest_xml(apk_path: &str, pretty: bool) -> Result<String, String> 
     let apk = fs::read(apk_path).map_err(|e| format!("cannot open APK: {}", e))?;
     let manifest_data = _extract_zip_entry(&apk, "AndroidManifest.xml")?;
 
-    decode_manifest_xml(&manifest_data, pretty)
-}
-
-/// Decode already-extracted data so query callers can retain typed file errors.
-pub(crate) fn decode_manifest_xml(manifest_data: &[u8], pretty: bool) -> Result<String, String> {
     _quiet_loguru();
-    let mut input = manifest_data;
+    let mut input = manifest_data.as_slice();
     let axml = AXML::new(&mut input, None)
         .map_err(|e| format!("AndroidManifest.xml is not a valid binary XML: {}", e))?;
     _format_xml(&axml.get_xml_string(), pretty)

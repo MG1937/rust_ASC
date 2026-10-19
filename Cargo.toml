@@ -6,7 +6,7 @@ license = "Apache-2.0"
 
 [features]
 default = ["mcp"]
-mcp = ["dep:rmcp", "dep:tokio", "dep:tokio-util", "dep:serde", "dep:serde_json", "dep:schemars"]
+mcp = ["dep:rmcp", "dep:tokio", "dep:serde", "dep:serde_json", "dep:schemars"]
 
 [profile.release]
 opt-level = 3           # max speed
@@ -21,8 +21,7 @@ opt-level = 0
 
 [dependencies]
 rmcp = { version = "3.5.1", optional = true, default-features = false, features = ["server", "transport-io"] }
-tokio = { version = "1", optional = true, features = ["rt", "sync", "macros", "time"] }
-tokio-util = { version = "0.7", optional = true, features = ["rt"] }
+tokio = { version = "1", optional = true, features = ["rt", "io-std", "time"] }
 serde = { version = "1", optional = true, features = ["derive"] }
 serde_json = { version = "1", optional = true }
 schemars = { version = "1", optional = true }

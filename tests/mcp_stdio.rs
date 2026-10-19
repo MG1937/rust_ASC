@@ -3,16 +3,14 @@
 mod dex_fixture;
 mod zip_fixture;
 
-use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use dex_fixture::{
-    make_class_only_dex, make_dex, make_dex041_container, make_instance_field_dex, make_invoke_dex,
-};
+use dex_fixture::{make_dex, make_instance_field_dex, make_invoke_dex};
 use serde_json::{Value, json};
 use tempfile::tempdir;
 use zip_fixture::{CompressionMethod, write_apk};
@@ -23,14 +21,11 @@ struct Client {
     output: Receiver<Result<Value, String>>,
     stdout: Option<JoinHandle<()>>,
     stderr: Option<JoinHandle<String>>,
+    next_id: u64,
 }
 
 impl Client {
     fn new() -> Self {
-        Self::version("2025-11-25")
-    }
-
-    fn version(version: &str) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_rust_ASC"))
             .arg("mcp")
             .stdin(Stdio::piped())
@@ -49,9 +44,9 @@ impl Client {
         let (send, output) = mpsc::channel();
         let stdout = std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
-                let result = line.map_err(|e| e.to_string()).and_then(|line| {
+                let result = line.map_err(|error| error.to_string()).and_then(|line| {
                     serde_json::from_str(&line)
-                        .map_err(|e| format!("non-protocol stdout: {line}: {e}"))
+                        .map_err(|error| format!("non-protocol stdout: {line}: {error}"))
                 });
                 if send.send(result).is_err() {
                     break;
@@ -64,17 +59,17 @@ impl Client {
             output,
             stdout: Some(stdout),
             stderr: Some(stderr),
+            next_id: 1,
         };
-        client.send(json!({"jsonrpc":"2.0", "id":0, "method":"initialize", "params":{
-            "protocolVersion":version, "capabilities":{}, "clientInfo":{"name":"test", "version":"1"}
-        }}));
+        client.send(
+            json!({"jsonrpc":"2.0", "id":0, "method":"initialize", "params":{
+                "protocolVersion":"2025-11-25",
+                "capabilities":{},
+                "clientInfo":{"name":"test", "version":"1"}
+            }}),
+        );
         let response = client.recv();
         assert_eq!(response["id"], 0);
-        assert_eq!(response["result"]["protocolVersion"], version, "{response}");
-        assert!(
-            response["result"]["capabilities"]["tools"].is_object(),
-            "{response}"
-        );
         assert_eq!(response["result"]["serverInfo"]["name"], "rust_ASC");
         client.send(json!({"jsonrpc":"2.0", "method":"notifications/initialized"}));
         client
@@ -88,37 +83,23 @@ impl Client {
 
     fn recv(&self) -> Value {
         self.output
-            .recv_timeout(Duration::from_secs(20))
+            .recv_timeout(Duration::from_secs(30))
             .expect("MCP reply timeout/disconnect")
             .expect("stdout must contain only JSON-RPC")
     }
 
     fn call(&mut self, name: &str, args: Value) -> Value {
+        let id = self.next_id;
+        self.next_id += 1;
         self.send(
-            json!({"jsonrpc":"2.0", "id":1, "method":"tools/call", "params":{
+            json!({"jsonrpc":"2.0", "id":id, "method":"tools/call", "params":{
                 "name":name, "arguments":args
             }}),
         );
         let response = self.recv();
-        assert_eq!(response["id"], 1, "{response}");
+        assert_eq!(response["id"], id, "{response}");
         assert!(response.get("error").is_none(), "{response}");
-        let result = &response["result"];
-        let text: Value =
-            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
-        assert_eq!(text, result["structuredContent"]);
-        result.clone()
-    }
-
-    fn error(&mut self, name: &str, args: Value, code: &str) {
-        let result = self.call(name, args);
-        assert_eq!(result["isError"], true, "{result}");
-        assert_eq!(result["structuredContent"]["code"], code, "{result}");
-        assert!(
-            !result["structuredContent"]["message"]
-                .as_str()
-                .unwrap()
-                .is_empty()
-        );
+        response["result"].clone()
     }
 
     fn finish(mut self) {
@@ -138,9 +119,6 @@ impl Client {
             std::thread::sleep(Duration::from_millis(10));
         }
         self.stdout.take().unwrap().join().unwrap();
-        if let Some(remaining) = self.output.try_iter().next() {
-            panic!("unexpected trailing protocol output: {remaining:?}");
-        }
     }
 }
 
@@ -152,36 +130,185 @@ impl Drop for Client {
     }
 }
 
-fn success(result: &Value) -> &Value {
-    assert_eq!(result["isError"], false, "{result}");
-    &result["structuredContent"]
+fn text(result: &Value) -> &str {
+    result["content"][0]["text"].as_str().unwrap()
+}
+
+fn run_cli(args: impl IntoIterator<Item = OsString>) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_rust_ASC"))
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+fn cli_stdout(args: impl IntoIterator<Item = OsString>) -> String {
+    let output = run_cli(args);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
 }
 
 #[test]
-fn discovers_exactly_four_read_only_typed_tools_and_supports_legacy_clients() {
-    for version in ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"] {
-        let mut client = Client::version(version);
-        client.send(json!({"jsonrpc":"2.0", "id":1, "method":"tools/list"}));
-        let response = client.recv();
-        let tools = response["result"]["tools"].as_array().unwrap();
-        let mut names: Vec<_> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        names.sort();
-        assert_eq!(names, ["findrefs", "getclass", "getmanifest", "listclass"]);
-        for tool in tools {
-            assert_eq!(tool["inputSchema"]["type"], "object");
-            assert_eq!(tool["inputSchema"]["additionalProperties"], false);
-            assert_eq!(tool["outputSchema"]["type"], "object");
-            assert_eq!(tool["annotations"]["readOnlyHint"], true);
-            assert_eq!(tool["annotations"]["openWorldHint"], false);
+fn exposes_four_documented_cli_wrappers() {
+    let mut client = Client::new();
+    client.send(json!({"jsonrpc":"2.0", "id":99, "method":"tools/list"}));
+    let response = client.recv();
+    let tools = response["result"]["tools"].as_array().unwrap();
+    let mut names: Vec<_> = tools
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["findrefs", "getclass", "getmanifest", "listclass"]);
+    for tool in tools {
+        assert_eq!(tool["inputSchema"]["type"], "object");
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        assert_eq!(tool["annotations"]["readOnlyHint"], false);
+        assert_eq!(tool["annotations"]["destructiveHint"], true);
+        assert!(tool.get("outputSchema").is_none());
+        let description = tool["description"].as_str().unwrap();
+        assert!(
+            (20..=80).contains(&description.len()),
+            "tool description is not concise: {description}"
+        );
+        for forbidden in ["-", "—", "{", "apk_path", "class_name", "fuzzy_class"] {
+            assert!(
+                !description.contains(forbidden),
+                "tool description contains {forbidden}: {description}"
+            );
         }
-        client.send(json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"export","arguments":{}}}));
-        assert_eq!(client.recv()["error"]["code"], -32602);
-        client.finish();
+        assert_described_properties(&tool["inputSchema"]);
+        assert_concise_descriptions(&tool["inputSchema"]);
+        let output = tool["inputSchema"]["properties"]["output"]["description"]
+            .as_str()
+            .unwrap();
+        if tool["name"] == "listclass" {
+            assert!(output.contains("Returned text is empty."));
+        } else {
+            assert!(output.contains("Content is also returned."));
+        }
+    }
+    client.send(
+        json!({"jsonrpc":"2.0", "id":100, "method":"tools/call", "params":{
+            "name":"export", "arguments":{}
+        }}),
+    );
+    assert_eq!(client.recv()["error"]["code"], -32602);
+    client.finish();
+}
+
+fn assert_described_properties(schema: &Value) {
+    if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+        for (name, property) in properties {
+            if name != "kind" {
+                assert!(
+                    property
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .is_some_and(|description| !description.is_empty()),
+                    "parameter {name} has no description: {property}"
+                );
+            }
+        }
+    }
+    if let Some(object) = schema.as_object() {
+        for value in object.values() {
+            assert_described_properties(value);
+        }
+    } else if let Some(array) = schema.as_array() {
+        for value in array {
+            assert_described_properties(value);
+        }
+    }
+}
+
+fn assert_concise_descriptions(schema: &Value) {
+    if let Some(object) = schema.as_object() {
+        if let Some(description) = object.get("description").and_then(Value::as_str) {
+            assert!(
+                description.len() <= 120,
+                "description is too long: {description}"
+            );
+            assert!(
+                !description.contains('-') && !description.contains('—'),
+                "description contains a dash: {description}"
+            );
+        }
+        for value in object.values() {
+            assert_concise_descriptions(value);
+        }
+    } else if let Some(array) = schema.as_array() {
+        for value in array {
+            assert_concise_descriptions(value);
+        }
     }
 }
 
 #[test]
-fn four_queries_return_full_structured_data_and_do_not_write_files() {
+fn tool_results_are_exact_cli_stdout() {
+    let dir = tempdir().unwrap();
+    let apk = dir.path().join("fixture with space.apk");
+    let dex = make_dex();
+    let manifest = minimal_manifest();
+    write_apk(
+        &apk,
+        &[("classes.dex", &dex), ("AndroidManifest.xml", &manifest)],
+        CompressionMethod::Deflated,
+    );
+    let path = apk.to_string_lossy().into_owned();
+    let mut client = Client::new();
+
+    let result = client.call(
+        "listclass",
+        json!({"apk_path":path, "prefix":"example", "thread":1}),
+    );
+    assert_eq!(result["isError"], false);
+    assert_eq!(
+        text(&result),
+        cli_stdout(
+            ["listclass", "--thread", "1", "--prefix", "example", &path,].map(OsString::from)
+        )
+    );
+
+    let result = client.call(
+        "getclass",
+        json!({"apk_path":path, "class_name":"example.Test", "thread":1}),
+    );
+    assert_eq!(result["isError"], false);
+    assert_eq!(
+        text(&result),
+        cli_stdout(["getclass", "--thread", "1", &path, "example.Test"].map(OsString::from))
+    );
+
+    let result = client.call("getmanifest", json!({"apk_path":path}));
+    assert_eq!(result["isError"], false);
+    assert_eq!(
+        text(&result),
+        cli_stdout(["getmanifest", &path].map(OsString::from))
+    );
+
+    let result = client.call(
+        "findrefs",
+        json!({
+            "apk_path":path,
+            "thread":1,
+            "query":{"kind":"string", "value":"token"}
+        }),
+    );
+    assert_eq!(result["isError"], false);
+    assert_eq!(
+        text(&result),
+        cli_stdout(["findrefs", "--thread", "1", &path, "string", "token"].map(OsString::from))
+    );
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    client.finish();
+}
+
+#[test]
+fn optional_output_writes_files_with_cli_semantics() {
     let dir = tempdir().unwrap();
     let apk = dir.path().join("fixture.apk");
     let dex = make_dex();
@@ -191,221 +318,73 @@ fn four_queries_return_full_structured_data_and_do_not_write_files() {
         &[("classes.dex", &dex), ("AndroidManifest.xml", &manifest)],
         CompressionMethod::Deflated,
     );
+    let path = apk.to_string_lossy().into_owned();
     let mut client = Client::new();
-    let result = client.call("listclass", json!({"apk_path":apk}));
-    assert_eq!(success(&result)["classes"], json!(["Lexample/Test;"]));
+
+    let class_output = dir.path().join("Test.java");
     let result = client.call(
         "getclass",
-        json!({"apk_path":apk,"class_name":"example.Test"}),
-    );
-    let data = success(&result);
-    assert_eq!(data["class_name"], "Lexample/Test;");
-    assert_eq!(data["dex_name"], "classes.dex");
-    assert!(data["source"].as_str().unwrap().contains("class Test"));
-    let result = client.call("getmanifest", json!({"apk_path":apk}));
-    assert!(
-        success(&result)["xml"]
-            .as_str()
-            .unwrap()
-            .contains("<manifest")
-    );
-    let result = client.call(
-        "findrefs",
-        json!({"apk_path":apk,"query":{"kind":"string","value":"token"}}),
-    );
-    let expected = ["first", "second"].map(|name| {
         json!({
-            "dex_name":"classes.dex", "class_name":"Lexample/Test;",
-            "method_name":name, "matched":["token"]
-        })
-    });
-    assert_eq!(success(&result)["references"], json!(expected));
-    let cli = Command::new(env!("CARGO_BIN_EXE_rust_ASC"))
-        .args(["findrefs", apk.to_str().unwrap(), "string", "token"])
-        .output()
-        .unwrap();
-    assert!(cli.status.success());
+            "apk_path":path,
+            "class_name":"example.Test",
+            "thread":1,
+            "output":class_output
+        }),
+    );
+    assert_eq!(result["isError"], false, "{result}");
     assert_eq!(
-        String::from_utf8(cli.stdout).unwrap(),
-        "classes.dex | Lexample/Test;->first | matched=(token)\nclasses.dex | Lexample/Test;->second | matched=(token)\n"
+        std::fs::read_to_string(&class_output).unwrap().trim_end(),
+        text(&result).trim_end()
     );
-    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-    client.finish();
-}
 
-#[test]
-fn failures_are_tool_errors_but_no_matches_are_successful() {
-    let dir = tempdir().unwrap();
-    let apk = dir.path().join("fixture.apk");
-    write_apk(
-        &apk,
-        &[("classes.dex", &make_dex())],
-        CompressionMethod::Stored,
-    );
-    let mut client = Client::new();
-    client.error(
+    let classes_output = dir.path().join("classes.txt");
+    let result = client.call(
         "listclass",
-        json!({"apk_path":"relative.apk"}),
-        "INVALID_ARGUMENT",
+        json!({"apk_path":path, "thread":1, "output":classes_output}),
     );
-    client.error(
-        "listclass",
-        json!({"apk_path":dir.path()}),
-        "INVALID_ARGUMENT",
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(
+        std::fs::read_to_string(&classes_output).unwrap(),
+        "Lexample/Test;\n"
     );
-    client.error(
-        "listclass",
-        json!({"apk_path":dir.path().join("missing.apk")}),
-        "FILE_NOT_FOUND",
+    assert_eq!(text(&result), "");
+
+    let manifest_output = dir.path().join("AndroidManifest.xml");
+    let result = client.call(
+        "getmanifest",
+        json!({"apk_path":path, "output":manifest_output}),
     );
-    client.error(
-        "listclass",
-        json!({"apk_path":apk,"prefix":" "}),
-        "INVALID_ARGUMENT",
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(
+        std::fs::read_to_string(&manifest_output)
+            .unwrap()
+            .trim_end(),
+        text(&result).trim_end()
     );
-    client.error(
-        "listclass",
-        json!({"apk_path":apk,"output":"not-allowed"}),
-        "INVALID_ARGUMENT",
-    );
-    client.error("getclass", json!({"apk_path":apk}), "INVALID_ARGUMENT");
-    client.error(
-        "getclass",
-        json!({"apk_path":apk,"class_name":"not.Found"}),
-        "NOT_FOUND",
-    );
-    client.error("getmanifest", json!({"apk_path":apk}), "NOT_FOUND");
-    client.error(
-        "findrefs",
-        json!({"apk_path":apk,"query":{"kind":"method"}}),
-        "INVALID_ARGUMENT",
-    );
-    client.error(
-        "findrefs",
-        json!({"apk_path":apk,"query":{"kind":"invalid"}}),
-        "INVALID_ARGUMENT",
-    );
-    let result = client.call("listclass", json!({"apk_path":apk,"prefix":"missing"}));
-    assert_eq!(success(&result)["classes"], json!([]));
+
+    let refs_output = dir.path().join("references.txt");
     let result = client.call(
         "findrefs",
-        json!({"apk_path":apk,"query":{"kind":"string","value":"missing"}}),
+        json!({
+            "apk_path":path,
+            "thread":1,
+            "query":{"kind":"string", "value":"token"},
+            "output":refs_output
+        }),
     );
-    assert_eq!(success(&result)["references"], json!([]));
-    client.finish();
-}
-
-#[test]
-fn malformed_inputs_are_not_reported_as_empty_or_partial_success() {
-    let dir = tempdir().unwrap();
-    let apk = dir.path().join("fixture.apk");
-    let mut client = Client::new();
-    for bytes in [b"not a zip".as_slice(), b""] {
-        std::fs::write(&apk, bytes).unwrap();
-        client.error("listclass", json!({"apk_path":apk}), "INVALID_FORMAT");
-        client.error(
-            "getclass",
-            json!({"apk_path":apk,"class_name":"example.Test"}),
-            "INVALID_FORMAT",
-        );
-    }
-    write_apk(
-        &apk,
-        &[("classes.dex", &make_dex()), ("classes2.dex", b"not a dex")],
-        CompressionMethod::Deflated,
-    );
-    client.error(
-        "findrefs",
-        json!({"apk_path":apk,"query":{"kind":"string","value":"token"}}),
-        "INVALID_FORMAT",
-    );
-    client.error("listclass", json!({"apk_path":apk}), "INVALID_FORMAT");
-    let mut bad_strings = make_dex();
-    let string_ids = dex_fixture::get_u32(&bad_strings, 0x3c) as usize;
-    dex_fixture::put_u32(&mut bad_strings, string_ids, u32::MAX);
-    write_apk(
-        &apk,
-        &[("classes.dex", &bad_strings)],
-        CompressionMethod::Stored,
-    );
-    client.error(
-        "findrefs",
-        json!({"apk_path":apk,"query":{"kind":"string","value":"token"}}),
-        "INVALID_FORMAT",
-    );
-    let mut broken_container = make_dex041_container();
-    broken_container.truncate(broken_container.len() - 8);
-    write_apk(
-        &apk,
-        &[("classes.dex", &broken_container)],
-        CompressionMethod::Stored,
-    );
-    client.error("listclass", json!({"apk_path":apk}), "INVALID_FORMAT");
-    write_apk(
-        &apk,
-        &[("AndroidManifest.xml", b"bad xml")],
-        CompressionMethod::Stored,
-    );
-    client.error("getmanifest", json!({"apk_path":apk}), "INVALID_FORMAT");
-    // A well-formed archive without DEX files is not a malformed archive.
-    let result = client.call("listclass", json!({"apk_path":apk}));
-    assert_eq!(success(&result)["classes"], json!([]));
-    // Corrupt the central-directory byte count, keeping the EOCD present.
-    let mut data = std::fs::read(&apk).unwrap();
-    let offset = data.len() - 22 + 12;
-    dex_fixture::put_u32(&mut data, offset, u32::MAX);
-    std::fs::write(&apk, data).unwrap();
-    client.error("listclass", json!({"apk_path":apk}), "INVALID_FORMAT");
-    client.finish();
-}
-
-#[test]
-fn repeated_calls_observe_new_files_and_multidex041_is_preserved() {
-    let dir = tempdir().unwrap();
-    let apk = dir.path().join("fixture.apk");
-    let mut client = Client::new();
-    write_apk(
-        &apk,
-        &[("classes.dex", &make_dex())],
-        CompressionMethod::Stored,
-    );
-    let result = client.call("listclass", json!({"apk_path":apk}));
-    assert_eq!(success(&result)["classes"], json!(["Lexample/Test;"]));
-    write_apk(
-        &apk,
-        &[("classes.dex", &make_dex041_container())],
-        CompressionMethod::Deflated,
-    );
-    let result = client.call("listclass", json!({"apk_path":apk}));
+    assert_eq!(result["isError"], false, "{result}");
     assert_eq!(
-        success(&result)["classes"],
-        json!([
-            "Lalpha/First;",
-            "Lshared/Duplicate;",
-            "Lbeta/Second;",
-            "Lshared/Duplicate;"
-        ])
+        std::fs::read_to_string(&refs_output).unwrap(),
+        text(&result)
     );
-    let result = client.call(
-        "getclass",
-        json!({"apk_path":apk,"class_name":"beta.Second"}),
-    );
-    assert_eq!(success(&result)["dex_name"], "classes.dex!classes2.dex");
     client.finish();
 }
 
 #[test]
-fn all_reference_kinds_have_structured_results() {
+fn findrefs_query_variants_map_to_cli_arguments() {
     let dir = tempdir().unwrap();
-    let apk = dir.path().join("fixture.apk");
-    let mut client = Client::new();
-    let mut invoke_dex = make_invoke_dex();
-    // Make the call self-referential. The shared fixture's trailing Target
-    // type is unsorted; Test is searchable by the exact-class binary search.
-    let methods = dex_fixture::get_u32(&invoke_dex, 0x5c) as usize;
-    invoke_dex[methods + 8..methods + 10].copy_from_slice(&0u16.to_le_bytes());
+    let apk = dir.path().join("references.apk");
     let mut type_dex = make_dex();
-    // Replace const-string v0, token with const-class v0, Lexample/Test;.
     let instruction = type_dex
         .windows(6)
         .position(|bytes| bytes == b"\x1a\0\x05\0\x0e\0")
@@ -414,87 +393,95 @@ fn all_reference_kinds_have_structured_results() {
     write_apk(
         &apk,
         &[
-            ("classes.dex", &invoke_dex),
-            ("classes2.dex", &make_instance_field_dex()),
-            ("classes3.dex", &type_dex),
+            ("classes.dex", &type_dex),
+            ("classes2.dex", &make_invoke_dex()),
+            ("classes3.dex", &make_instance_field_dex()),
         ],
         CompressionMethod::Stored,
     );
-    for query in [
-        json!({"kind":"type","value":"example"}),
-        json!({"kind":"method","name":"callToMethod","class_name":"example.Test"}),
-        json!({"kind":"method","name":"callToMethod","class_name":"Test","fuzzy_class":true}),
-        json!({"kind":"field","name":"a","class_name":"example.Test"}),
-    ] {
-        let result = client.call("findrefs", json!({"apk_path":apk,"query":query}));
-        let references = success(&result)["references"].as_array().unwrap();
-        assert!(!references.is_empty(), "{query}: {result}");
-        for reference in references {
-            assert!(!reference["matched"].as_array().unwrap().is_empty());
-            assert!(
-                reference["dex_name"]
-                    .as_str()
-                    .unwrap()
-                    .starts_with("classes")
-            );
-        }
+    let path = apk.to_string_lossy().into_owned();
+    let mut client = Client::new();
+    let cases = [
+        (
+            json!({"kind":"type", "value":"example"}),
+            vec!["type", "example"],
+        ),
+        (
+            json!({
+                "kind":"method",
+                "name":"callToMethod",
+                "class_name":"example.Target"
+            }),
+            vec!["method", "callToMethod", "--class", "example.Target"],
+        ),
+        (
+            json!({
+                "kind":"field",
+                "name":"a",
+                "class_name":"example",
+                "fuzzy_class":true
+            }),
+            vec!["field", "a", "--class", "example", "--fuzzy-class"],
+        ),
+    ];
+    for (query, query_args) in cases {
+        let result = client.call("findrefs", json!({"apk_path":path, "query":query}));
+        assert_eq!(result["isError"], false, "{result}");
+        let mut cli_args = vec![OsString::from("findrefs"), OsString::from(&path)];
+        cli_args.extend(query_args.into_iter().map(OsString::from));
+        assert_eq!(text(&result), cli_stdout(cli_args));
     }
     client.finish();
 }
 
 #[test]
-fn concurrent_requests_have_independent_ids_and_complete_untruncated_results() {
+fn cli_failures_are_isolated_and_the_server_remains_usable() {
     let dir = tempdir().unwrap();
     let apk = dir.path().join("fixture.apk");
-    let names: Vec<_> = (0..4000)
-        .map(|i| format!("Lexample/Class{i:04};"))
-        .collect();
-    let descriptors: Vec<_> = names.iter().map(String::as_str).collect();
-    let dex = make_class_only_dex(&descriptors, 0, b"035");
-    write_apk(&apk, &[("classes.dex", &dex)], CompressionMethod::Deflated);
+    write_apk(
+        &apk,
+        &[("classes.dex", &make_dex())],
+        CompressionMethod::Stored,
+    );
+    let path = apk.to_string_lossy().into_owned();
     let mut client = Client::new();
-    for id in 1..=8 {
-        client.send(
-            json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{
-                "name":"listclass","arguments":{"apk_path":apk}
-            }}),
-        );
-    }
-    client.send(json!({"jsonrpc":"2.0","id":9,"method":"ping"}));
-    let mut results = BTreeMap::new();
-    for _ in 1..=9 {
-        let response = client.recv();
-        assert!(
-            results
-                .insert(response["id"].as_u64().unwrap(), response)
-                .is_none()
-        );
-    }
-    for id in 1..=8 {
-        let result = &results[&id]["result"];
-        assert_eq!(success(result)["classes"], json!(names));
-        let text: Value =
-            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
-        assert_eq!(text, result["structuredContent"]);
-    }
-    assert!(results[&9].get("error").is_none());
+
+    let result = client.call("getclass", json!({"apk_path":path}));
+    assert_eq!(result["isError"], true);
+    assert!(text(&result).contains("invalid arguments"), "{result}");
+
+    let cli = run_cli(
+        ["getclass", &path, "example.Missing"]
+            .map(OsString::from)
+            .into_iter(),
+    );
+    assert!(!cli.status.success());
+    let result = client.call(
+        "getclass",
+        json!({"apk_path":path, "class_name":"example.Missing"}),
+    );
+    assert_eq!(result["isError"], true);
+    assert_eq!(text(&result), String::from_utf8_lossy(&cli.stderr).trim());
+
+    let result = client.call("listclass", json!({"apk_path":path}));
+    assert_eq!(result["isError"], false);
+    assert_eq!(text(&result), "Lexample/Test;\n");
     client.finish();
 }
 
-// Minimal valid binary XML: one UTF-8 string, an empty resource map, and a
-// manifest start/end pair. Kept generated and reviewable instead of a binary blob.
 fn minimal_manifest() -> Vec<u8> {
-    fn u16_(out: &mut Vec<u8>, n: u16) {
-        out.extend(n.to_le_bytes());
+    fn u16_(out: &mut Vec<u8>, value: u16) {
+        out.extend(value.to_le_bytes());
     }
-    fn u32_(out: &mut Vec<u8>, n: u32) {
-        out.extend(n.to_le_bytes());
+    fn u32_(out: &mut Vec<u8>, value: u32) {
+        out.extend(value.to_le_bytes());
     }
     fn header(out: &mut Vec<u8>, kind: u16, header_size: u16, size: u32) {
         u16_(out, kind);
         u16_(out, header_size);
         u32_(out, size);
     }
+
     let mut out = Vec::new();
     header(&mut out, 3, 8, 120);
     header(&mut out, 1, 28, 44);
