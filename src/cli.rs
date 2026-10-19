@@ -391,7 +391,7 @@ pub fn _build_main_parser() -> Command {
             )),
     );
 
-    Command::new("rust_ASC")
+    let command = Command::new("rust_ASC")
         .about("ASC tooling entry.")
         .after_help(
             "examples:\n  rust_ASC getclass app.apk Lcom/poc/Main; -o Main.java\n  \
@@ -466,7 +466,10 @@ pub fn _build_main_parser() -> Command {
                 )
                 .arg(Arg::new("apk_path").required(true).help("Path to the input APK file.")),
         )
-        .subcommand(findrefs)
+        .subcommand(findrefs);
+    #[cfg(feature = "mcp")]
+    let command = command.subcommand(Command::new("mcp").about("Serve MCP tools over stdio."));
+    command
 }
 
 pub fn run_from<I, T>(args: I) -> Result<(), String>
@@ -478,6 +481,8 @@ where
         .try_get_matches_from(args)
         .map_err(|error| error.to_string())?;
     match matches.subcommand() {
+        #[cfg(feature = "mcp")]
+        Some(("mcp", _)) => crate::mcp::run(),
         Some(("getclass", args)) => _handle_getclass(args),
         Some(("listclass", args)) => _handle_listclass(args),
         Some(("export", args)) => _handle_export(args),
