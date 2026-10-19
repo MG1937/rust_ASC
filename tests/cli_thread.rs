@@ -23,6 +23,22 @@ fn thread_option_is_singular_and_belongs_to_each_command() {
 }
 
 #[test]
+fn mcp_command_follows_the_compile_time_feature() {
+    let output = run_cli(&["mcp", "--help"]);
+    let text = stderr(&output);
+    if cfg!(feature = "mcp") {
+        assert!(
+            text.contains("Serve read-only MCP tools over stdio."),
+            "{text}"
+        );
+        assert!(!text.contains("--thread"), "{text}");
+        assert!(!text.contains("--port"), "{text}");
+    } else {
+        assert!(text.contains("unrecognized subcommand 'mcp'"), "{text}");
+    }
+}
+
+#[test]
 fn plural_threads_option_is_rejected() {
     let output = run_cli(&[
         "findrefs",

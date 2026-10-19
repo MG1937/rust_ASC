@@ -3,3 +3,5 @@
 pub mod asc_client;
 pub mod asc_core;
 pub mod cli;
+#[cfg(feature = "mcp")]
+pub mod mcp;

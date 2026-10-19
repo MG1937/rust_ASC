@@ -203,6 +203,26 @@ pub fn make_dex() -> Vec<u8> {
     )
 }
 
+/// Build one caller with repeated string references, including a CLI delimiter.
+/// Target index order intentionally differs from lexical and instruction order.
+pub fn make_multi_string_dex() -> Vec<u8> {
+    make_member_dex(
+        &[
+            b"Lexample/Test;",
+            b"Ljava/lang/Object;",
+            b"V",
+            b"run",
+            b"token-z",
+            b"token-a; token-b",
+        ],
+        &[0, 1, 2],
+        None,
+        &[(0, 0, 3)],
+        code_item(1, 0, 0, 7, b"\x1a\0\x05\0\x1a\0\x04\0\x1a\0\x05\0\x0e\0"),
+        b"\0\0\x01\0\0\x09",
+    )
+}
+
 /// Build a class whose run method invokes example.Target.callToMethod.
 pub fn make_invoke_dex() -> Vec<u8> {
     let strings: &[&[u8]] = &[
