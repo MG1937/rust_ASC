@@ -186,7 +186,7 @@ fn exposes_four_documented_cli_wrappers() {
             .as_str()
             .unwrap();
         if tool["name"] == "listclass" {
-            assert!(output.contains("Returned text is empty."));
+            assert!(output.contains("stdout is empty."));
         } else {
             assert!(output.contains("Content is also returned."));
         }
