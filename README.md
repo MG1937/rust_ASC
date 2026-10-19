@@ -20,12 +20,20 @@ https://github.com/user-attachments/assets/f1f71a75-1eca-4647-89ce-406ed2c63c6b
 - Export pseudocode for every class in an APK with the public API of [MG1937/radguard](https://github.com/MG1937/radguard).
 - Handle multi-DEX APKs and DEX 041 logical containers.
 - Use memory-mapped APK access and no on-disk cache.
+- Expose four read-only, structured MCP tools over stdio, suitable for Pi CodeMode.
 
 ## Build
 
 ```bash
+git submodule update --init --recursive
 cargo build --release
+
+# Build without MCP and its dedicated dependencies.
+cargo build --release --no-default-features
 ```
+
+MCP is enabled by default, including CI/releases. `--no-default-features`
+removes only MCP and its dedicated dependencies; existing CLI commands remain.
 
 The executable is written to:
 
@@ -68,6 +76,43 @@ rust_ASC export --thread 10 --debug app.apk output
 ```
 
 `export` writes one `.java` pseudocode file per class under package-relative paths in the output directory. Its multi-threaded APK export pipeline is supplied by [MG1937/radguard](https://github.com/MG1937/radguard). With `--debug`, it reports the APK export lifecycle and worker activity.
+
+## MCP
+
+Read-only MCP tools over stdio, designed for CodeMode:
+`getclass`, `listclass`, `getmanifest`, and `findrefs`.
+
+Configure:
+
+Ask your agent to install and configure ASC, or follow the manual setup below.
+
+<details>
+<summary>Agent setup instructions</summary>
+
+1. Confirm the target MCP client and user- or project-level configuration scope.
+2. Locate an MCP-enabled `rust_ASC` executable. If needed, run
+   `git submodule update --init --recursive` followed by `cargo install --path . --locked`
+   from this repository. MCP is enabled by default; the executable is normally installed
+   to `~/.cargo/bin/rust_ASC`.
+3. Register `asc` as a stdio server using the executable's absolute path and
+   `args: ["mcp"]`. Use the client's native configuration format and preserve existing settings.
+4. Reload or restart the client and verify that the four tools listed above are available.
+
+</details>
+
+For manual setup, replace `/absolute/path/to/rust_ASC` with your executable path
+and follow your client's MCP configuration instructions:
+
+```json
+{
+  "mcpServers": {
+    "asc": {
+      "command": "/absolute/path/to/rust_ASC",
+      "args": ["mcp"]
+    }
+  }
+}
+```
 
 ## CLI Benchmark
 

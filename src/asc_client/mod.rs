@@ -3,3 +3,5 @@ pub mod apk_handler;
 pub mod asc_handler;
 pub mod dex_container;
 pub mod manifest_handler;
+pub mod query;
+pub(crate) mod query_input;

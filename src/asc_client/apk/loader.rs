@@ -139,6 +139,63 @@ pub(crate) fn _parse_cd_dex_entries(buf: &[u8]) -> Vec<DexEntry> {
     entries
 }
 
+/// Strict validation for long-lived query callers. The CLI's fast scanner is
+/// retained, but malformed archives must not become successful empty results.
+pub(crate) fn checked_dex_entries(buf: &[u8]) -> Result<Vec<DexEntry>, String> {
+    let eocd = _find_eocd(buf).ok_or("EOCD not found")?;
+    if _STRUCT_H::unpack_from(buf, eocd + 4) != 0
+        || _STRUCT_H::unpack_from(buf, eocd + 6) != 0
+        || _STRUCT_H::unpack_from(buf, eocd + 8) != _STRUCT_H::unpack_from(buf, eocd + 10)
+    {
+        return Err("multi-disk ZIP is unsupported".to_owned());
+    }
+    let count = _STRUCT_H::unpack_from(buf, eocd + 10) as usize;
+    if count == u16::MAX as usize {
+        return Err("ZIP64 is unsupported".to_owned());
+    }
+    let comment = _STRUCT_H::unpack_from(buf, eocd + 20) as usize;
+    if eocd + 22 + comment != buf.len() {
+        return Err("bad ZIP comment length".to_owned());
+    }
+    let start = _STRUCT_I::unpack_from(buf, eocd + 16) as usize;
+    let end = start
+        .checked_add(_STRUCT_I::unpack_from(buf, eocd + 12) as usize)
+        .filter(|&end| end <= eocd)
+        .ok_or("bad central directory range")?;
+    let mut pos = start;
+    let mut entries = Vec::new();
+    for _ in 0..count {
+        if pos.checked_add(46).is_none_or(|next| next > end) || &buf[pos..pos + 4] != _CD_SIG {
+            return Err("bad central directory entry".to_owned());
+        }
+        let name_len = _STRUCT_H::unpack_from(buf, pos + 28) as usize;
+        let extra_len = _STRUCT_H::unpack_from(buf, pos + 30) as usize;
+        let comment_len = _STRUCT_H::unpack_from(buf, pos + 32) as usize;
+        let next = pos
+            .checked_add(46 + name_len + extra_len + comment_len)
+            .filter(|&next| next <= end)
+            .ok_or("bad central directory entry range")?;
+        if _STRUCT_H::unpack_from(buf, pos + 8) & 1 != 0 {
+            return Err("encrypted ZIP entries are unsupported".to_owned());
+        }
+        let name = &buf[pos + 46..pos + 46 + name_len];
+        if name.ends_with(_DEX_SUFFIX) && !name.contains(&b'/') {
+            entries.push(DexEntry {
+                name: String::from_utf8_lossy(name).into_owned(),
+                uncomp_size: _STRUCT_I::unpack_from(buf, pos + 24),
+                comp_size: _STRUCT_I::unpack_from(buf, pos + 20),
+                local_header_off: _STRUCT_I::unpack_from(buf, pos + 42),
+                comp_method: _STRUCT_H::unpack_from(buf, pos + 10),
+            });
+        }
+        pos = next;
+    }
+    if pos != end {
+        return Err("central directory size/count mismatch".to_owned());
+    }
+    Ok(entries)
+}
+
 fn _inflate_deflate_chunks(compressed: &[u8], stop_event: &AtomicBool) -> Option<Vec<u8>> {
     let mut decoder = DeflateDecoder::new(compressed);
     let mut out = Vec::with_capacity(compressed.len() * 3);
@@ -231,6 +288,14 @@ pub(crate) fn _inflate_dex(
 }
 
 pub(crate) fn _extract_zip_entry(buf: &[u8], target_name: &str) -> Result<Vec<u8>, String> {
+    try_extract_zip_entry(buf, target_name)?
+        .ok_or_else(|| format!("{target_name} not found in APK"))
+}
+
+pub(crate) fn try_extract_zip_entry(
+    buf: &[u8],
+    target_name: &str,
+) -> Result<Option<Vec<u8>>, String> {
     let eocd_off = _find_eocd(buf).ok_or_else(|| "EOCD not found".to_owned())?;
     let cd_size = _STRUCT_I::unpack_from(buf, eocd_off + 12) as usize;
     let cd_off = _STRUCT_I::unpack_from(buf, eocd_off + 16) as usize;
@@ -262,7 +327,7 @@ pub(crate) fn _extract_zip_entry(buf: &[u8], target_name: &str) -> Result<Vec<u8
                 local_header_off: _STRUCT_I::unpack_from(buf, ptr + 42),
                 comp_method: _STRUCT_H::unpack_from(buf, ptr + 10),
             };
-            return _inflate_dex(buf, &entry, None)?.ok_or_else(|| "inflate stopped".to_owned());
+            return _inflate_dex(buf, &entry, None);
         }
 
         ptr = name_end
@@ -271,5 +336,5 @@ pub(crate) fn _extract_zip_entry(buf: &[u8], target_name: &str) -> Result<Vec<u8
             .ok_or_else(|| "bad central directory entry range".to_owned())?;
     }
 
-    Err(format!("{target_name} not found in APK"))
+    Ok(None)
 }
