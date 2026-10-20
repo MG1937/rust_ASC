@@ -123,6 +123,22 @@ fn _mask_table(values: &[u8]) -> [u8; 256] {
     table
 }
 
+/// 65536-bit occupancy bitmap over index values.
+fn _idx_bits(idxs: &HashSet<u32>) -> Vec<u64> {
+    let mut bits = vec![0u64; (u16::MAX as usize + 1) / 64];
+    for &idx in idxs {
+        if idx <= u16::MAX as u32 {
+            bits[(idx as usize) >> 6] |= 1u64 << (idx & 63);
+        }
+    }
+    bits
+}
+
+#[inline(always)]
+fn _idx_bit(bits: &[u64], idx: usize) -> bool {
+    bits[idx >> 6] & (1u64 << (idx & 63)) != 0
+}
+
 fn _idx_mask(idxs: &HashSet<u32>) -> Vec<u8> {
     let mut table = vec![0u8; u16::MAX as usize + 1];
     for &idx in idxs {
@@ -218,16 +234,36 @@ impl<'a> CodeItemScanner<'a> {
                 }
             }
             _ => {
-                // >3 opcode values: mask-table loop, still use hi_mask pre-filter for speed
+                // >3 opcode values: mask-table loop, still use hi_mask pre-filter for speed.
+                // DEX instructions are 16-bit aligned and every instruction length is a
+                // multiple of 2 bytes, so opcode bytes only ever appear at even offsets.
+                // Odd-offset hits can never survive `InsnLocator::locate` (its verifier
+                // walks instruction boundaries from an even method start), so scanning
+                // half the positions produces byte-identical results for half the work.
                 let op_mask = _mask_table(opcode_values);
-                for start in 0..raw_len.saturating_sub(3) {
+                if idx_width == 2 {
+                    // Test the referenced index first: the query index set is a
+                    // handful of values out of 65536, so the bitmap rejects
+                    // nearly every position and the opcode table is touched
+                    // only on real candidates. Same predicate, same output.
+                    let idx_bits = _idx_bits(idxs);
+                    let mut start = 0usize;
+                    while start + 4 <= raw_len {
+                        let idx = u16::from_le_bytes([raw[start + 2], raw[start + 3]]) as usize;
+                        if _idx_bit(&idx_bits, idx) && op_mask[raw[start] as usize] != 0 {
+                            matched_offset.push((start + off_start) as u32);
+                            if mark {
+                                mark_idx.push(idx as u32);
+                            }
+                        }
+                        start += 2;
+                    }
+                    return;
+                }
+                for start in (0..raw_len.saturating_sub(3)).step_by(2) {
                     if op_mask[raw[start] as usize] == 0 { continue; }
                     if start + 2 + idx_width > raw_len { continue; }
-                    let idx = if idx_width == 2 {
-                        u16::from_le_bytes([raw[start + 2], raw[start + 3]]) as u32
-                    } else {
-                        u32::from_le_bytes([raw[start + 2], raw[start + 3], raw[start + 4], raw[start + 5]])
-                    };
+                    let idx = u32::from_le_bytes([raw[start + 2], raw[start + 3], raw[start + 4], raw[start + 5]]);
                     if idx_mask[idx as usize] == 0 { continue; }
                     matched_offset.push((start + off_start) as u32);
                     if mark { mark_idx.push(idx); }
@@ -283,8 +319,21 @@ impl<'a> CodeItemScanner<'a> {
                 .flatten()
                 .copied()
                 .collect();
+            let profile = std::env::var_os("RASC_PROFILE").is_some();
+            let ts0 = profile.then(std::time::Instant::now);
             let insn_offs = self._scan_code_item(&type_key, &idxs_set, mark);
+            let ts1 = profile.then(std::time::Instant::now);
             let mids = insn_locator.locate(&insn_offs);
+            let ts2 = profile.then(std::time::Instant::now);
+            if profile {
+                eprintln!(
+                    "[PROF] {} bytescan={:.3}ms insn_locate={:.3}ms hits={}",
+                    type_key,
+                    (ts1.unwrap() - ts0.unwrap()).as_secs_f64() * 1e3,
+                    (ts2.unwrap() - ts1.unwrap()).as_secs_f64() * 1e3,
+                    insn_offs.len()
+                );
+            }
             scan.insert(type_key, mids);
         }
     }

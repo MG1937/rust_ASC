@@ -7,8 +7,10 @@ use std::time::Instant;
 
 use memmap2::{Mmap, MmapOptions};
 
-use crate::asc_client::apk::loader::{_inflate_dex, DexEntry};
-use crate::asc_client::dex_container::into_logical_dex_buffers;
+use crate::asc_client::apk::loader::{_inflate_dex_into_with, DexEntry};
+use crate::asc_client::dex_container::{
+    dex041_logical_offsets, into_logical_dex_buffers,
+};
 use crate::asc_core::findrefs::findrefs_manager::FindRefInput;
 
 static _WORKER_APK_MM: OnceLock<Mutex<Option<(String, Arc<Mmap>)>>> = OnceLock::new();
@@ -45,15 +47,49 @@ pub(crate) fn _findrefs_worker_from_buf(
     // Python worker imports AscHandler only after receiving a findrefs task.
     use crate::asc_client::asc_handler::AscHandler;
 
+    let mut inflate_buf = Vec::new();
+    let mut decompressor = libdeflater::Decompressor::new();
+    _findrefs_worker_from_buf_into(
+        apk_buf,
+        entry,
+        find_type,
+        find,
+        aggregate,
+        &mut inflate_buf,
+        &mut decompressor,
+    )
+}
+
+/// Same as [`_findrefs_worker_from_buf`] but lets a worker thread keep one
+/// warm inflate buffer across DEX entries.
+pub(crate) fn _findrefs_worker_from_buf_into(
+    apk_buf: &[u8],
+    entry: &DexEntry,
+    find_type: &str,
+    find: &FindRefInput,
+    aggregate: bool,
+    inflate_buf: &mut Vec<u8>,
+    decompressor: &mut libdeflater::Decompressor,
+) -> Result<(String, Vec<String>, f64, f64, u32), String> {
+    use crate::asc_client::asc_handler::AscHandler;
+
     let t0 = Instant::now();
-    let data = _inflate_dex(apk_buf, entry, None)?.unwrap_or_default();
+    _inflate_dex_into_with(apk_buf, entry, inflate_buf, decompressor)?;
     let t1 = Instant::now();
     let mut lines = Vec::new();
     let handler = AscHandler::new(false);
     // A physical classes*.dex entry may contain several logical DEX files in
     // the DEX 041 container format; each needs an independent reference scan.
-    for (dex_name, dex_buf) in into_logical_dex_buffers(&entry.name, data) {
-        lines.extend(handler.findrefs_vec(&dex_name, dex_buf, find_type, find, aggregate));
+    if dex041_logical_offsets(inflate_buf).len() <= 1 {
+        let data = std::mem::take(inflate_buf);
+        let dex = crate::asc_core::utils::tinydex::DEX::from_vec(data, &entry.name);
+        lines.extend(handler._findrefs(&entry.name, &dex, find_type, find, aggregate));
+        *inflate_buf = dex.into_vec();
+    } else {
+        let data = std::mem::take(inflate_buf);
+        for (dex_name, dex_buf) in into_logical_dex_buffers(&entry.name, data) {
+            lines.extend(handler.findrefs_vec(&dex_name, dex_buf, find_type, find, aggregate));
+        }
     }
     let t2 = Instant::now();
     Ok((

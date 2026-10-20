@@ -88,7 +88,7 @@ impl AscHandler {
         self._findrefs(dex_name, &dex, find_type, find, aggregate)
     }
 
-    fn _findrefs(
+    pub(crate) fn _findrefs(
         &self,
         dex_name: &str,
         dex: &DEX,
@@ -97,12 +97,18 @@ impl AscHandler {
         aggregate: bool,
     ) -> Vec<String> {
         let mut ref_manager = FindRefManager::new(dex, self.debug);
+        let profile = std::env::var_os("RASC_PROFILE").is_some();
+        let tf0 = profile.then(std::time::Instant::now);
         let output = ref_manager.find_ref(find, true);
+        let tf1 = profile.then(std::time::Instant::now);
 
         let Some(out) = output else {
             return Vec::new();
         };
 
+        if profile {
+            eprintln!("[PROF] find_ref={:.3}ms", (tf1.unwrap() - tf0.unwrap()).as_secs_f64() * 1e3);
+        }
         let matched_idxs: Vec<usize> = out.mark_idx.iter().map(|&x| x as usize).collect();
 
         let mids: &Vec<Option<Vec<u32>>> = match find_type {

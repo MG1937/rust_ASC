@@ -268,6 +268,7 @@ pub(crate) fn render_dex_methods(
     };
     let class_bytes = class.map(cesu8::to_java_cesu8);
     let mut text = String::new();
+    let mut descriptor = String::new();
     let mut rendered_count = 0;
     for class_index in 0..reader.classes.count {
         let entry = reader.classes.entry(class_index)?;
@@ -277,7 +278,10 @@ pub(crate) fn render_dex_methods(
         {
             continue;
         }
-        let descriptor = reader.type_name(type_index)?.to_owned();
+        // Reuse one buffer: this runs once per class (hundreds of thousands on
+        // a large DEX) and a fresh `String` per iteration is pure allocator churn.
+        descriptor.clear();
+        descriptor.push_str(reader.type_name(type_index)?);
         let mut cursor = u32_at(buf, entry + 24)? as usize;
         if cursor == 0 {
             continue;

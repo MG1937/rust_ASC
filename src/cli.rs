@@ -155,17 +155,21 @@ fn _handle_listclass(args: &ArgMatches) -> Result<(), String> {
     let debug = args.get_flag("debug");
     let thread = _get_worker_count(args)?;
     let prefix = args.get_one::<String>("prefix").map(String::as_str);
-    let names = ApkHandler::new(apk_path, debug, thread).list_classes(prefix)?;
-    let text = if names.is_empty() {
-        String::new()
-    } else {
-        names.join("\n") + "\n"
-    };
-
+    let handler = ApkHandler::new(apk_path, debug, thread);
     if let Some(output) = args.get_one::<String>("output") {
-        fs::write(output, text).map_err(|error| format!("cannot write {output}: {error}"))?;
+        let mut file = File::create(output)
+            .map_err(|error| format!("cannot write {output}: {error}"))?;
+        handler.for_each_class_chunk(prefix, |chunk| {
+            file.write_all(chunk)
+                .map_err(|error| format!("cannot write {output}: {error}"))
+        })?;
     } else {
-        print!("{text}");
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        handler.for_each_class_chunk(prefix, |chunk| {
+            out.write_all(chunk)
+                .map_err(|error| format!("cannot write stdout: {error}"))
+        })?;
     }
 
     if debug {
@@ -184,19 +188,21 @@ fn _handle_listmethod(args: &ArgMatches) -> Result<(), String> {
     let thread = _get_worker_count(args)?;
     let class = args.get_one::<String>("class_name").map(String::as_str);
     let filter = args.get_one::<String>("filter").map(String::as_str);
-    let chunks = ApkHandler::new(apk_path, debug, thread).list_method_chunks(class, filter)?;
-    let write_chunks = |writer: &mut dyn Write| {
-        chunks
-            .iter()
-            .try_for_each(|chunk| writer.write_all(chunk.as_bytes()))
-    };
+    let handler = ApkHandler::new(apk_path, debug, thread);
     if let Some(output) = args.get_one::<String>("output") {
-        File::create(output)
-            .and_then(|mut file| write_chunks(&mut file))
+        let mut file = File::create(output)
             .map_err(|error| format!("cannot write {output}: {error}"))?;
+        handler.for_each_method_chunk(class, filter, |chunk| {
+            file.write_all(chunk)
+                .map_err(|error| format!("cannot write {output}: {error}"))
+        })?;
     } else {
-        write_chunks(&mut io::stdout().lock())
-            .map_err(|error| format!("cannot write stdout: {error}"))?;
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        handler.for_each_method_chunk(class, filter, |chunk| {
+            out.write_all(chunk)
+                .map_err(|error| format!("cannot write stdout: {error}"))
+        })?;
     }
     if debug {
         println!(
