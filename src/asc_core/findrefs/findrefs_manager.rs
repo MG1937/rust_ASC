@@ -141,20 +141,35 @@ impl<'a> FindRefManager<'a> {
     pub fn find_ref(&mut self, find: &FindRefInput, mark: bool) -> Option<FindRefOutput> {
         let mut has_idx = false;
 
+        let profile = std::env::var_os("RASC_PROFILE").is_some();
+        let ph0 = profile.then(std::time::Instant::now);
         // Phase 0: build all required locators first (drop mutable refs before Phase 1)
         if find.string.is_some() || find.type_.is_some() || find.method.is_some() || find.field.is_some() {
             let _ = self._get_str_locator(true);
         }
         if find.type_.is_some() || find.method.is_some() || find.field.is_some() {
-            let _ = self._get_type_locator(true);
+            // Only type queries or fuzzy declaring-class filters use the type
+            // adjacency map. Exact/unscoped member queries read the id tables.
+            let fuzzy_method_class = find.method.as_ref().is_some_and(|query| {
+                query.class.as_ref().is_some_and(|(name, precise)| !precise && !name.is_empty())
+            });
+            let fuzzy_field_class = find.field.as_ref().is_some_and(|query| {
+                query.class.as_ref().is_some_and(|(name, precise)| !precise && !name.is_empty())
+            });
+            let _ = self._get_type_locator(
+                find.type_.is_some() || fuzzy_method_class || fuzzy_field_class,
+            );
         }
         if find.method.is_some() {
-            let _ = self._get_method_locator(true);
+            let _ = self._get_method_locator(false);
         }
         if find.field.is_some() {
-            let _ = self._get_field_locator(true);
+            // A find_ref call is a one-shot query over this DEX. Resolve its
+            // indices directly instead of building maps for every field.
+            let _ = self._get_field_locator(false);
         }
 
+        let ph1 = profile.then(std::time::Instant::now);
         // Phase 1: locate all indices (immutable borrows only)
         let string_result: Option<HashSet<u32>>;
         let type_result: Option<HashSet<u32>>;
@@ -179,7 +194,7 @@ impl<'a> FindRefManager<'a> {
             let str_loc = self.str_locator.as_ref().unwrap();
             let type_loc = self.type_locator.as_ref().unwrap();
             let method_loc = self.method_locator.as_ref().unwrap();
-            let r = method_loc.locate(m, str_loc, type_loc);
+            let r = method_loc.locate_unindexed(m, str_loc, type_loc);
             if !r.is_empty() { has_idx = true; }
             method_result = Some(r);
         } else { method_result = None; }
@@ -188,11 +203,19 @@ impl<'a> FindRefManager<'a> {
             let str_loc = self.str_locator.as_ref().unwrap();
             let type_loc = self.type_locator.as_ref().unwrap();
             let field_loc = self.field_locator.as_ref().unwrap();
-            let r = field_loc.locate(f, str_loc, type_loc);
+            let r = field_loc.locate_unindexed(f, str_loc, type_loc);
             if !r.is_empty() { has_idx = true; }
             field_result = Some(r);
         } else { field_result = None; }
 
+        let ph2 = profile.then(std::time::Instant::now);
+        if profile {
+            eprintln!(
+                "[PROF] build_locators={:.3}ms locate_idxs={:.3}ms",
+                (ph1.unwrap() - ph0.unwrap()).as_secs_f64() * 1e3,
+                (ph2.unwrap() - ph1.unwrap()).as_secs_f64() * 1e3
+            );
+        }
         if find.is_empty() {
             return None;
         }
@@ -207,7 +230,9 @@ impl<'a> FindRefManager<'a> {
         }
 
         // Phase 2: build scan map and run scanner
+        let tp0 = profile.then(std::time::Instant::now);
         let insn_locator = self._ensure_insn_locator();
+        let tp1 = profile.then(std::time::Instant::now);
         let mut scanner = CodeItemScanner::new(insn_locator);
 
         let mut scan_map: HashMap<String, Vec<Option<Vec<u32>>>> = HashMap::new();
@@ -229,6 +254,14 @@ impl<'a> FindRefManager<'a> {
         }
 
         scanner.scan(&mut scan_map, mark, insn_locator);
+        let tp2 = profile.then(std::time::Instant::now);
+        if profile {
+            eprintln!(
+                "[PROF] insn_parse={:.3}ms scan={:.3}ms",
+                (tp1.unwrap() - tp0.unwrap()).as_secs_f64() * 1e3,
+                (tp2.unwrap() - tp1.unwrap()).as_secs_f64() * 1e3
+            );
+        }
         let mark_idx = std::mem::take(&mut scanner.mark_idx);
 
         let get_or_default = |key: &str| -> Vec<Option<Vec<u32>>> {

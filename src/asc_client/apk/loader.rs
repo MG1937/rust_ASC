@@ -198,6 +198,126 @@ fn _validate_inflated_size(entry: &DexEntry, data: Vec<u8>) -> Result<Vec<u8>, S
     Ok(data)
 }
 
+/// Inflate only as much of an entry as `need` asks for.
+///
+/// `listclass` only reads the DEX id tables plus the class descriptor strings,
+/// which live in the first ~20-35% of a D8/R8 DEX; the remaining code/debug
+/// sections never need to leave the deflate stream. `need` is re-evaluated on
+/// each round and returns the prefix length required by the current data.
+pub(crate) fn _inflate_dex_prefix_into<F>(
+    buf: &[u8],
+    entry: &DexEntry,
+    out: &mut Vec<u8>,
+    decompressor: &mut Decompressor,
+    need: F,
+) -> Result<(), String>
+where
+    F: Fn(&[u8]) -> Result<usize, String>,
+{
+    let comp_view = _compressed_data(buf, entry)?;
+    out.clear();
+    match entry.comp_method {
+        0 => {
+            out.extend_from_slice(comp_view);
+            return Ok(());
+        }
+        8 => {}
+        method => return Err(format!("unsupported compression method: {method}")),
+    }
+
+    let total = entry.uncomp_size as usize;
+    // Low-level streaming API: `flate2`'s Read adapter copies through an
+    // intermediate buffer, while `decompress` writes straight into `out`.
+    let mut decoder = flate2::Decompress::new(false);
+    let mut produced = 0usize;
+    let mut step = 1usize << 20;
+    let mut round = 0usize;
+    loop {
+        let target = need(&out[..produced])?.min(total);
+        if produced >= target {
+            out.truncate(produced);
+            return Ok(());
+        }
+        // Some APKs keep class descriptors near the end of the DEX. Streaming
+        // (flate2) decodes slower than the one-shot libdeflate path, so switch
+        // back when the saving would be small.
+        if round > 0 && target * 5 > total * 3 {
+            return _inflate_dex_into_with(buf, entry, out, decompressor);
+        }
+        round += 1;
+
+        let want = (target - produced).min(step);
+        let consumed = decoder.total_in() as usize;
+        out.resize(produced + want, 0);
+        decoder
+            .decompress(
+                &comp_view[consumed..],
+                &mut out[produced..produced + want],
+                flate2::FlushDecompress::None,
+            )
+            .map_err(|error| format!("flate2 cannot decompress {}: {error}", entry.name))?;
+        produced = decoder.total_out() as usize;
+        if produced == 0 || (produced < target && consumed == decoder.total_in() as usize) {
+            out.truncate(produced);
+            return Err(format!(
+                "size mismatch: expect {}, got {}",
+                entry.uncomp_size,
+                produced
+            ));
+        }
+        step = (step * 2).min(8 << 20);
+    }
+}
+
+/// Inflate one entry into a caller-owned buffer so a worker can reuse the same
+/// pages across entries. Fresh multi-MB allocations must be zero-filled on
+/// first touch, which roughly halves libdeflate's throughput; reusing a warm
+/// buffer measured ~915 MB/s against ~460 MB/s for a fresh `Vec`.
+pub(crate) fn _inflate_dex_into(
+    buf: &[u8],
+    entry: &DexEntry,
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
+    _inflate_dex_into_with(buf, entry, out, &mut Decompressor::new())
+}
+
+/// Same as [`_inflate_dex_into`] with a reusable decompressor: libdeflate
+/// builds its decode tables per instance, which measured ~7% of inflate time.
+pub(crate) fn _inflate_dex_into_with(
+    buf: &[u8],
+    entry: &DexEntry,
+    out: &mut Vec<u8>,
+    decompressor: &mut Decompressor,
+) -> Result<(), String> {
+    let comp_view = _compressed_data(buf, entry)?;
+    out.clear();
+    match entry.comp_method {
+        0 => out.extend_from_slice(comp_view),
+        8 => {
+            let size = entry.uncomp_size as usize;
+            out.reserve(size);
+            // SAFETY: `reserve` guarantees capacity for `size` bytes and every
+            // byte is written by the decompressor before it is observed.
+            unsafe { out.set_len(size) };
+            let actual_size = decompressor
+                .deflate_decompress(comp_view, out)
+                .map_err(|error| {
+                    format!("libdeflate cannot decompress {}: {error}", entry.name)
+                })?;
+            out.truncate(actual_size);
+        }
+        method => return Err(format!("unsupported compression method: {method}")),
+    }
+    if entry.uncomp_size != 0 && out.len() != entry.uncomp_size as usize {
+        return Err(format!(
+            "size mismatch: expect {}, got {}",
+            entry.uncomp_size,
+            out.len()
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn _inflate_dex(
     buf: &[u8],
     entry: &DexEntry,

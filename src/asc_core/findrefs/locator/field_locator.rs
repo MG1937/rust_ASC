@@ -136,6 +136,81 @@ impl<'a> FieldLocator<'a> {
         ret
     }
 
+    /// Locate a one-shot field query without materializing two maps of sets.
+    /// Each field row already stores its owner and name indices; selecting rows
+    /// after resolving the query is cheaper than indexing every field first.
+    /// The indexed `locate` API remains available for callers reusing a locator.
+    pub fn locate_unindexed(
+        &self,
+        find: &FieldFind,
+        str_locator: &StringLocator,
+        type_locator: &TypeLocator,
+    ) -> HashSet<u32> {
+        let class = find.class.as_ref().filter(|(name, _)| !name.is_empty());
+        let field = find.field.as_deref().filter(|name| !name.is_empty());
+        if class.is_none() && field.is_none() {
+            return HashSet::new();
+        }
+
+        let precise_class = class.is_some_and(|(_, precise)| *precise);
+        let class_indices = class.map(|(name, precise)| {
+            if *precise {
+                let index = self._find_type_idx_precisely(name);
+                if index < 0 {
+                    HashSet::new()
+                } else {
+                    HashSet::from([index as u32])
+                }
+            } else {
+                type_locator.locate(name, str_locator)
+            }
+        });
+        if class_indices.as_ref().is_some_and(HashSet::is_empty) {
+            return HashSet::new();
+        }
+
+        // Preserve both established match paths: exact-class queries compare
+        // decoded member names; unscoped/fuzzy-class substring queries resolve
+        // matching string indices through StringLocator first.
+        let name_indices = field
+            .filter(|_| !find.field_precise && !precise_class)
+            .map(|name| str_locator.locate(name));
+        if name_indices.as_ref().is_some_and(HashSet::is_empty) {
+            return HashSet::new();
+        }
+
+        let (offset, count) = self.base.dex.header.fields;
+        let mut found = HashSet::new();
+        for index in 0..count {
+            let (owner, _, name_index) =
+                _STRUCT_HHI::unpack_from(self.base.buf, offset as usize + index as usize * 8);
+            if class_indices
+                .as_ref()
+                .is_some_and(|classes| !classes.contains(&(owner as u32)))
+            {
+                continue;
+            }
+            if let Some(names) = &name_indices {
+                if !names.contains(&name_index) {
+                    continue;
+                }
+            } else if let Some(wanted) = field {
+                let member = self.base.dex.get_field(index);
+                let name = member.name();
+                let matches = if find.field_precise {
+                    name == wanted
+                } else {
+                    name.contains(wanted)
+                };
+                if !matches {
+                    continue;
+                }
+            }
+            found.insert(index);
+        }
+        found
+    }
+
     // find struct: {"class" : ["None|clz", precise], "field" : "None|fuzzy_field"}
     // the two values cannot both be None
     // if class not None, input clz must be precise dalvik format value or fuzzy clz

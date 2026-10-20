@@ -696,6 +696,19 @@ impl DEX {
         Self::from_vec(buf.to_vec(), name)
     }
 
+    /// Recover the backing buffer so a worker can reuse its pages for the next
+    /// DEX instead of allocating fresh multi-MB memory per entry.
+    pub fn into_vec(mut self) -> Vec<u8> {
+        let buf = std::mem::replace(&mut self.buf, std::rc::Rc::new(Vec::new()));
+        // Dropping the DEX releases the context's second reference, leaving
+        // `buf` uniquely owned in the common case (no copy).
+        drop(self);
+        match std::rc::Rc::try_unwrap(buf) {
+            Ok(vec) => vec,
+            Err(shared) => shared.as_ref().clone(),
+        }
+    }
+
     pub fn from_vec(buf: Vec<u8>, name: &str) -> Self {
         let buf = Rc::new(buf);
         let header = DEXHeader::new(&buf);
