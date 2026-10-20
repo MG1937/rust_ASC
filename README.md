@@ -18,7 +18,7 @@ https://github.com/user-attachments/assets/f1f71a75-1eca-4647-89ce-406ed2c63c6b
 
 - Search code references for strings, types, methods, and fields across every DEX in an APK.
 - Locate and decompile one class directly from an APK.
-- List classes and decode `AndroidManifest.xml`.
+- List classes and defined methods, and decode `AndroidManifest.xml`.
 - Export pseudocode for every class in an APK with the public API of [MG1937/radguard](https://github.com/MG1937/radguard).
 - Handle multi-DEX APKs and DEX 041 logical containers.
 - Use memory-mapped APK access and no on-disk cache.
@@ -65,7 +65,7 @@ On Windows, the executable name is `rust_ASC.exe`.
 
 ## Command Line Usage
 
-Thread control is consistent across `getclass`, `listclass`, `findrefs`, and `export`:
+Thread control is consistent across `getclass`, `listclass`, `listmethod`, `findrefs`, and `export`:
 
 - Use only `--thread <N>`.
 - Put `--thread` immediately after the subcommand.
@@ -88,6 +88,11 @@ rust_ASC getclass --thread 10 app.apk com.example.Main -o Main.java
 rust_ASC listclass --thread 10 app.apk
 rust_ASC listclass --thread 10 --prefix com.example app.apk
 
+# List method definitions without decompiling, optionally filtered by class/name.
+rust_ASC listmethod --thread 10 app.apk
+rust_ASC listmethod --class com.example.Main -f onCreate app.apk
+rust_ASC listmethod app.apk -o methods.txt
+
 # Decode AndroidManifest.xml.
 rust_ASC getmanifest app.apk -o AndroidManifest.xml
 
@@ -95,11 +100,15 @@ rust_ASC getmanifest app.apk -o AndroidManifest.xml
 rust_ASC export --thread 10 --debug app.apk output
 ```
 
+`listmethod` prints one full Dalvik method descriptor per line, for example `Lcom/example/Main;->onCreate(Landroid/os/Bundle;)V`. It lists only methods defined in class data, including native and abstract methods, not external methods that are merely referenced. `--class` matches an exact dotted name or Dalvik descriptor; `--filter` / `-f` matches a case insensitive method name substring. Results retain DEX/class/declaration order and duplicate definitions across DEX files. Like `listclass`, `-o` writes the list instead of printing it; no matches produce an empty list.
+
 `export` writes one `.java` pseudocode file per class under package-relative paths in the output directory. Its multi-threaded APK export pipeline is supplied by [MG1937/radguard](https://github.com/MG1937/radguard). With `--debug`, it reports the APK export lifecycle and worker activity.
 
 ## MCP
 
-`rust_ASC mcp` runs a stdio MCP server that exposes the CLI commands as tools: `getclass`, `listclass`, `getmanifest`, and `findrefs`. Each call spawns a fresh CLI process, so behavior always matches the command line.
+`rust_ASC mcp` runs a stdio MCP server that exposes the CLI commands as tools: `getclass`, `listclass`, `listmethod`, `getmanifest`, and `findrefs`. Each call spawns a fresh CLI process, so behavior always matches the command line.
+
+The `listmethod` tool accepts `apk_path`, optional `class_name`, `filter`, `thread`, and `output`. It returns exactly the CLI stdout; with `output`, it writes the method list to that file and returns empty text.
 
 Configure it in your MCP client:
 

@@ -5,10 +5,29 @@
 
 use crate::asc_core::findrefs::locator::base_locator::{_debug_log, BaseLocator};
 use crate::asc_core::utils::structs::_STRUCT_I;
-use crate::asc_core::utils::tinydex::DEX;
+use crate::asc_core::utils::tinydex::{DEX, _decode_mutf8_fallback};
 use memchr::memmem::Finder;
 use std::collections::HashSet;
 use std::time::Instant;
+
+fn matches_name(raw: &[u8], query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    if !query.is_ascii() || !raw.is_ascii() {
+        return _decode_mutf8_fallback(raw).to_lowercase().contains(query);
+    }
+    let pattern = query.as_bytes();
+    memchr::memchr2_iter(
+        pattern[0].to_ascii_lowercase(),
+        pattern[0].to_ascii_uppercase(),
+        raw,
+    )
+    .any(|start| {
+        raw.get(start..start + pattern.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(pattern))
+    })
+}
 
 pub struct StringLocator<'a> {
     pub base: BaseLocator<'a>,
@@ -148,6 +167,61 @@ impl<'a> StringLocator<'a> {
             }
         }
         located_idx
+    }
+
+    /// Match each distinct method-name index once, regardless of physical string order.
+    pub(crate) fn locate_name_indices(
+        buf: &[u8],
+        name_indices: impl Iterator<Item = u32>,
+        query: &str,
+    ) -> Result<HashSet<u32>, String> {
+        if buf.len() < 0x70 {
+            return Err("invalid DEX header".to_owned());
+        }
+        let count = _STRUCT_I::unpack_from(buf, 0x38) as usize;
+        let offset = _STRUCT_I::unpack_from(buf, 0x3c) as usize;
+        let end = count
+            .checked_mul(4)
+            .and_then(|size| offset.checked_add(size))
+            .ok_or("DEX string table overflow")?;
+        if end > buf.len() {
+            return Err("DEX string table outside input".to_owned());
+        }
+        let query = query.to_lowercase();
+        let mut seen = vec![false; count];
+        let mut matches = HashSet::new();
+        for index in name_indices {
+            let index_usize = index as usize;
+            let visited = seen
+                .get_mut(index_usize)
+                .ok_or("DEX string index out of range")?;
+            if *visited {
+                continue;
+            }
+            *visited = true;
+            let data = _STRUCT_I::unpack_from(buf, offset + index_usize * 4) as usize;
+            let raw = Self::string_data_bytes(buf, data)?;
+            if matches_name(raw, &query) {
+                matches.insert(index);
+            }
+        }
+        Ok(matches)
+    }
+
+    pub(crate) fn string_data_bytes(buf: &[u8], mut offset: usize) -> Result<&[u8], String> {
+        for shift in (0..35).step_by(7) {
+            let byte = *buf.get(offset).ok_or("truncated DEX string length")?;
+            offset += 1;
+            if shift == 28 && byte > 0x0f {
+                return Err("DEX string length overflow".to_owned());
+            }
+            if byte & 0x80 == 0 {
+                let tail = &buf[offset..];
+                let end = memchr::memchr(0, tail).ok_or("unterminated DEX string")?;
+                return Ok(&tail[..end]);
+            }
+        }
+        Err("DEX string length overflow".to_owned())
     }
 
     pub fn locate(&self, string: &str) -> HashSet<u32> {
