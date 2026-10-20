@@ -13,7 +13,7 @@ fn stderr(output: &Output) -> String {
 
 #[test]
 fn thread_option_is_singular_and_belongs_to_each_command() {
-    for command in ["getclass", "listclass", "export", "findrefs"] {
+    for command in ["getclass", "listclass", "listmethod", "export", "findrefs"] {
         let output = run_cli(&[command, "--help"]);
         assert_eq!(output.status.code(), Some(1));
         let stderr = stderr(&output);

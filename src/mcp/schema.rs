@@ -34,6 +34,21 @@ struct ListClass {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct ListMethod {
+    /// Path to the APK to analyze.
+    apk_path: String,
+    /// Only list methods defined by this class. Accepts a dotted name or Dalvik descriptor.
+    class_name: Option<String>,
+    /// Optional case insensitive substring filter over method names.
+    filter: Option<String>,
+    /// Positive worker count. Defaults to available CPU count.
+    thread: Option<usize>,
+    /// Optional method list output file. When set, stdout is empty. Existing files are overwritten.
+    output: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct GetManifest {
     /// Path to the APK to analyze.
     apk_path: String,
@@ -108,6 +123,10 @@ pub(super) fn tools() -> Vec<Tool> {
             "listclass",
             "List class descriptors from every DEX in an APK.",
         ),
+        tool::<ListMethod>(
+            "listmethod",
+            "List defined method descriptors from every DEX in an APK.",
+        ),
         tool::<GetManifest>(
             "getmanifest",
             "Decode AndroidManifest.xml to formatted XML.",
@@ -128,6 +147,7 @@ impl Query {
         let args = match name {
             "getclass" => getclass(serde_json::from_value(args).map_err(invalid_args)?),
             "listclass" => listclass(serde_json::from_value(args).map_err(invalid_args)?),
+            "listmethod" => listmethod(serde_json::from_value(args).map_err(invalid_args)?),
             "getmanifest" => getmanifest(serde_json::from_value(args).map_err(invalid_args)?),
             "findrefs" => findrefs(serde_json::from_value(args).map_err(invalid_args)?),
             _ => return Err("unknown tool".to_owned()),
@@ -165,6 +185,21 @@ fn listclass(input: ListClass) -> Vec<OsString> {
     }
     args.push(input.apk_path.into());
     push_output(&mut args, input.output);
+    args
+}
+
+fn listmethod(input: ListMethod) -> Vec<OsString> {
+    let mut args = vec!["listmethod".into()];
+    push_thread(&mut args, input.thread);
+    if let Some(class) = input.class_name {
+        args.push(format!("--class={class}").into());
+    }
+    if let Some(filter) = input.filter {
+        args.push(format!("--filter={filter}").into());
+    }
+    push_output(&mut args, input.output);
+    args.push("--".into());
+    args.push(input.apk_path.into());
     args
 }
 

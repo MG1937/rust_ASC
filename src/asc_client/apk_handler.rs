@@ -2,7 +2,7 @@
 // Strict 1:1 translation from Python apk_handler.py
 
 use std::fs::File;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -16,8 +16,9 @@ use crate::asc_client::apk::dex_reader::{
 use crate::asc_client::apk::loader::{
     _inflate_dex as _load_dex, _parse_cd_dex_entries as _parse_entries, DexEntry,
 };
-use crate::asc_client::dex_container::iter_logical_dex_buffers;
+use crate::asc_client::dex_container::{into_logical_dex_buffers, iter_logical_dex_buffers};
 use crate::asc_core::findrefs::findrefs_manager::FindRefInput;
+use crate::asc_core::findrefs::scan::method_id_scan::render_dex_methods;
 
 fn _inflate_and_hit(
     mm: &[u8],
@@ -242,6 +243,58 @@ impl ApkHandler {
             .filter(|prefix| prefix.is_ascii())
             .map(str::as_bytes);
 
+        self._list_dex_items("class", |buf| {
+            let names = _list_classes(buf, prefix.as_deref(), prefix_bytes)?;
+            let count = names.len();
+            Ok((names, count))
+        })
+    }
+
+    /// List defined method signatures in DEX declaration order.
+    pub fn list_methods(
+        &self,
+        class: Option<&str>,
+        filter: Option<&str>,
+    ) -> Result<Vec<String>, String> {
+        Ok(self
+            .list_method_chunks(class, filter)?
+            .iter()
+            .flat_map(|text| text.lines().map(str::to_owned))
+            .collect())
+    }
+
+    pub(crate) fn list_method_chunks(
+        &self,
+        class: Option<&str>,
+        filter: Option<&str>,
+    ) -> Result<Vec<String>, String> {
+        let class = class
+            .map(str::trim)
+            .map(|name| {
+                if name.is_empty() {
+                    return Err("Class name cannot be empty".to_owned());
+                }
+                Ok(if name.starts_with('L') && name.ends_with(';') {
+                    name.to_owned()
+                } else {
+                    format!("L{};", name.replace('.', "/"))
+                })
+            })
+            .transpose()?;
+        let filter = filter.map(str::to_lowercase);
+        self._list_dex_items("method", |buf| {
+            let (text, count) = render_dex_methods(buf, class.as_deref(), filter.as_deref())?;
+            Ok((vec![text], count))
+        })
+    }
+
+    fn _list_dex_items<F>(&self, kind: &str, list: F) -> Result<Vec<String>, String>
+    where
+        F: Fn(&[u8]) -> Result<(Vec<String>, usize), String> + Sync,
+    {
+        if self.max_workers == 0 {
+            return Err("Worker count must be greater than zero".to_owned());
+        }
         let t_start = Instant::now();
         let mm = self._open_apk()?;
         let entries = _parse_entries(&mm);
@@ -250,61 +303,51 @@ impl ApkHandler {
         }
 
         let workers = entries.len().min(self.max_workers);
-        let entries = Arc::new(entries);
-        let work_queue = Arc::new(Mutex::new(0usize));
-        let results = Arc::new(Mutex::new(vec![None; entries.len()]));
+        let next = AtomicUsize::new(0);
+        let results = Mutex::new(vec![None; entries.len()]);
         thread::scope(|scope| {
             for _ in 0..workers {
-                let entries = Arc::clone(&entries);
-                let work_queue = Arc::clone(&work_queue);
-                let results = Arc::clone(&results);
-                let prefix = prefix.as_deref();
-                let prefix_bytes = prefix_bytes;
-                let mm = &mm;
-                scope.spawn(move || loop {
-                    let index = {
-                        let mut next = work_queue.lock().unwrap();
-                        if *next >= entries.len() {
-                            return;
-                        }
-                        let index = *next;
-                        *next += 1;
-                        index
-                    };
-                    let entry = &entries[index];
-                    let result = _load_dex(mm, entry, None).and_then(|data| {
-                        let data = data.ok_or_else(|| "inflate stopped".to_owned())?;
-                        let mut names = Vec::new();
-                        for (_dex_name, dex_buf) in iter_logical_dex_buffers(&entry.name, &data) {
-                            names.extend(_list_classes(&dex_buf, prefix, prefix_bytes)?);
-                        }
-                        Ok((entry.name.clone(), names))
-                    });
-                    results.lock().unwrap()[index] = Some(result);
+                scope.spawn(|| {
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(entry) = entries.get(index) else {
+                            break;
+                        };
+                        let result = _load_dex(&mm, entry, None).and_then(|data| {
+                            let data = data.ok_or_else(|| "inflate stopped".to_owned())?;
+                            let mut items = Vec::new();
+                            let mut count = 0;
+                            for (_, dex_buf) in into_logical_dex_buffers(&entry.name, data) {
+                                let (dex_items, dex_count) = list(&dex_buf)?;
+                                items.extend(dex_items);
+                                count += dex_count;
+                            }
+                            Ok((items, count))
+                        });
+                        results.lock().unwrap()[index] = Some(result);
+                    }
                 });
             }
         });
 
-        let mut names = Vec::new();
-        let mut results = results.lock().unwrap();
-        for result in results.iter_mut() {
-            let (dex_name, dex_names) = result
-                .take()
-                .ok_or_else(|| "listclass worker did not return a result".to_owned())??;
-            names.extend(dex_names.iter().cloned());
-            self._log(&format!(
-                "[APK] '{dex_name}' class_count={}",
-                dex_names.len()
-            ));
+        let mut items = Vec::new();
+        let mut total_count = 0;
+        for (entry, result) in entries.iter().zip(results.into_inner().unwrap()) {
+            let (dex_items, count) =
+                result.ok_or_else(|| format!("list{kind} worker did not return a result"))??;
+            if self.debug {
+                self._log(&format!("[APK] '{}' {kind}_count={count}", entry.name));
+            }
+            items.extend(dex_items);
+            total_count += count;
         }
         if self.debug {
             self._log(&format!(
-                "[APK] listclass total={:.2} us count={} workers={workers}",
+                "[APK] list{kind} total={:.2} us count={total_count} workers={workers}",
                 t_start.elapsed().as_secs_f64() * 1_000_000.0,
-                names.len(),
             ));
         }
-        Ok(names)
+        Ok(items)
     }
 
     pub fn for_each_findrefs(

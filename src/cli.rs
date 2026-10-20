@@ -177,6 +177,36 @@ fn _handle_listclass(args: &ArgMatches) -> Result<(), String> {
     Ok(())
 }
 
+fn _handle_listmethod(args: &ArgMatches) -> Result<(), String> {
+    let t_start = Instant::now();
+    let apk_path = args.get_one::<String>("apk_path").unwrap();
+    let debug = args.get_flag("debug");
+    let thread = _get_worker_count(args)?;
+    let class = args.get_one::<String>("class_name").map(String::as_str);
+    let filter = args.get_one::<String>("filter").map(String::as_str);
+    let chunks = ApkHandler::new(apk_path, debug, thread).list_method_chunks(class, filter)?;
+    let write_chunks = |writer: &mut dyn Write| {
+        chunks
+            .iter()
+            .try_for_each(|chunk| writer.write_all(chunk.as_bytes()))
+    };
+    if let Some(output) = args.get_one::<String>("output") {
+        File::create(output)
+            .and_then(|mut file| write_chunks(&mut file))
+            .map_err(|error| format!("cannot write {output}: {error}"))?;
+    } else {
+        write_chunks(&mut io::stdout().lock())
+            .map_err(|error| format!("cannot write stdout: {error}"))?;
+    }
+    if debug {
+        println!(
+            "[DEBUG] Total Execution Time: {:.2} us",
+            t_start.elapsed().as_secs_f64() * 1_000_000.0
+        );
+    }
+    Ok(())
+}
+
 fn _export_progress(progress: ExportProgress) {
     match progress {
         ExportProgress::Activity { .. } | ExportProgress::DexInflated { .. } => {}
@@ -440,6 +470,28 @@ pub fn _build_main_parser() -> Command {
                 .arg(Arg::new("apk_path").required(true).help("Path to the input APK file.")),
         ))
         .subcommand(common_args(
+            Command::new("listmethod")
+                .about("List method definitions across all DEX entries without decompilation.")
+                .arg(Arg::new("apk_path").required(true).help("Path to the input APK file."))
+                .arg(
+                    Arg::new("class_name")
+                        .long("class")
+                        .help("Only list methods defined by this class (dotted name or Dalvik descriptor)."),
+                )
+                .arg(
+                    Arg::new("filter")
+                        .short('f')
+                        .long("filter")
+                        .help("Case insensitive substring filter over method names."),
+                )
+                .arg(
+                    Arg::new("output")
+                        .short('o')
+                        .long("output")
+                        .help("Write method descriptors to this file instead of stdout."),
+                ),
+        ))
+        .subcommand(common_args(
             Command::new("export")
                 .about("Export pseudocode for every class in an APK into an output directory.")
                 .arg(Arg::new("apk_path").required(true).help("Path to the input APK file."))
@@ -485,6 +537,7 @@ where
         Some(("mcp", _)) => crate::mcp::run(),
         Some(("getclass", args)) => _handle_getclass(args),
         Some(("listclass", args)) => _handle_listclass(args),
+        Some(("listmethod", args)) => _handle_listmethod(args),
         Some(("export", args)) => _handle_export(args),
         Some(("getmanifest", args)) => _handle_getmanifest(args),
         Some(("findrefs", args)) => _handle_findrefs(args),
