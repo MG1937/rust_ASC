@@ -49,6 +49,19 @@ struct ListMethod {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct ListString {
+    /// Path to the APK to analyze.
+    apk_path: String,
+    /// Optional case insensitive substring filter over string values.
+    filter: Option<String>,
+    /// Positive worker count. Defaults to available CPU count.
+    thread: Option<usize>,
+    /// Optional string list output file. When set, stdout is empty. Existing files are overwritten.
+    output: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct GetManifest {
     /// Path to the APK to analyze.
     apk_path: String,
@@ -127,6 +140,10 @@ pub(super) fn tools() -> Vec<Tool> {
             "listmethod",
             "List defined method descriptors from every DEX in an APK.",
         ),
+        tool::<ListString>(
+            "liststring",
+            "List string pool values from every DEX in an APK.",
+        ),
         tool::<GetManifest>(
             "getmanifest",
             "Decode AndroidManifest.xml to formatted XML.",
@@ -148,6 +165,7 @@ impl Query {
             "getclass" => getclass(serde_json::from_value(args).map_err(invalid_args)?),
             "listclass" => listclass(serde_json::from_value(args).map_err(invalid_args)?),
             "listmethod" => listmethod(serde_json::from_value(args).map_err(invalid_args)?),
+            "liststring" => liststring(serde_json::from_value(args).map_err(invalid_args)?),
             "getmanifest" => getmanifest(serde_json::from_value(args).map_err(invalid_args)?),
             "findrefs" => findrefs(serde_json::from_value(args).map_err(invalid_args)?),
             _ => return Err("unknown tool".to_owned()),
@@ -194,6 +212,18 @@ fn listmethod(input: ListMethod) -> Vec<OsString> {
     if let Some(class) = input.class_name {
         args.push(format!("--class={class}").into());
     }
+    if let Some(filter) = input.filter {
+        args.push(format!("--filter={filter}").into());
+    }
+    push_output(&mut args, input.output);
+    args.push("--".into());
+    args.push(input.apk_path.into());
+    args
+}
+
+fn liststring(input: ListString) -> Vec<OsString> {
+    let mut args = vec!["liststring".into()];
+    push_thread(&mut args, input.thread);
     if let Some(filter) = input.filter {
         args.push(format!("--filter={filter}").into());
     }

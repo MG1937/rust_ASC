@@ -213,6 +213,37 @@ fn _handle_listmethod(args: &ArgMatches) -> Result<(), String> {
     Ok(())
 }
 
+fn _handle_liststring(args: &ArgMatches) -> Result<(), String> {
+    let t_start = Instant::now();
+    let apk_path = args.get_one::<String>("apk_path").unwrap();
+    let debug = args.get_flag("debug");
+    let thread = _get_worker_count(args)?;
+    let filter = args.get_one::<String>("filter").map(String::as_str);
+    let handler = ApkHandler::new(apk_path, debug, thread);
+    if let Some(output) = args.get_one::<String>("output") {
+        let mut file = File::create(output)
+            .map_err(|error| format!("cannot write {output}: {error}"))?;
+        handler.for_each_string_chunk(filter, |chunk| {
+            file.write_all(chunk)
+                .map_err(|error| format!("cannot write {output}: {error}"))
+        })?;
+    } else {
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        handler.for_each_string_chunk(filter, |chunk| {
+            out.write_all(chunk)
+                .map_err(|error| format!("cannot write stdout: {error}"))
+        })?;
+    }
+    if debug {
+        println!(
+            "[DEBUG] Total Execution Time: {:.2} us",
+            t_start.elapsed().as_secs_f64() * 1_000_000.0
+        );
+    }
+    Ok(())
+}
+
 fn _export_progress(progress: ExportProgress) {
     match progress {
         ExportProgress::Activity { .. } | ExportProgress::DexInflated { .. } => {}
@@ -434,6 +465,7 @@ pub fn _build_main_parser() -> Command {
              rust_ASC getclass --thread 16 app.apk com.poc.Main\n  \
              rust_ASC listclass app.apk -o classes.txt\n  \
              rust_ASC listclass --prefix com.poc app.apk\n  \
+             rust_ASC liststring app.apk -f https -o strings.txt\n  \
              rust_ASC export --thread 16 app.apk output\n  \
              rust_ASC getmanifest app.apk -o AndroidManifest.xml\n  \
              rust_ASC findrefs app.apk string token -o string_refs.txt\n  \
@@ -498,6 +530,23 @@ pub fn _build_main_parser() -> Command {
                 ),
         ))
         .subcommand(common_args(
+            Command::new("liststring")
+                .about("List string pool values across all DEX entries; use --filter to match a substring.")
+                .arg(Arg::new("apk_path").required(true).help("Path to the input APK file."))
+                .arg(
+                    Arg::new("filter")
+                        .short('f')
+                        .long("filter")
+                        .help("Case insensitive substring filter over string values."),
+                )
+                .arg(
+                    Arg::new("output")
+                        .short('o')
+                        .long("output")
+                        .help("Write string values to this file instead of stdout."),
+                ),
+        ))
+        .subcommand(common_args(
             Command::new("export")
                 .about("Export pseudocode for every class in an APK into an output directory.")
                 .arg(Arg::new("apk_path").required(true).help("Path to the input APK file."))
@@ -544,6 +593,7 @@ where
         Some(("getclass", args)) => _handle_getclass(args),
         Some(("listclass", args)) => _handle_listclass(args),
         Some(("listmethod", args)) => _handle_listmethod(args),
+        Some(("liststring", args)) => _handle_liststring(args),
         Some(("export", args)) => _handle_export(args),
         Some(("getmanifest", args)) => _handle_getmanifest(args),
         Some(("findrefs", args)) => _handle_findrefs(args),

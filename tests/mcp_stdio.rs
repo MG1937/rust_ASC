@@ -152,7 +152,7 @@ fn cli_stdout(args: impl IntoIterator<Item = OsString>) -> String {
 }
 
 #[test]
-fn exposes_five_documented_cli_wrappers() {
+fn exposes_six_documented_cli_wrappers() {
     let mut client = Client::new();
     client.send(json!({"jsonrpc":"2.0", "id":99, "method":"tools/list"}));
     let response = client.recv();
@@ -169,7 +169,8 @@ fn exposes_five_documented_cli_wrappers() {
             "getclass",
             "getmanifest",
             "listclass",
-            "listmethod"
+            "listmethod",
+            "liststring"
         ]
     );
     for tool in tools {
@@ -194,7 +195,7 @@ fn exposes_five_documented_cli_wrappers() {
         let output = tool["inputSchema"]["properties"]["output"]["description"]
             .as_str()
             .unwrap();
-        if tool["name"] == "listclass" || tool["name"] == "listmethod" {
+        if ["listclass", "listmethod", "liststring"].contains(&tool["name"].as_str().unwrap()) {
             assert!(output.contains("stdout is empty."));
         } else {
             assert!(output.contains("Content is also returned."));
@@ -280,6 +281,16 @@ fn tool_results_are_exact_cli_stdout() {
         cli_stdout(
             ["listclass", "--thread", "1", "--prefix", "example", &path,].map(OsString::from)
         )
+    );
+
+    let result = client.call(
+        "liststring",
+        json!({"apk_path":path, "filter":"first", "thread":1}),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(
+        text(&result),
+        cli_stdout(["liststring", "--thread", "1", "--filter", "first", "--", &path].map(OsString::from))
     );
 
     let result = client.call(

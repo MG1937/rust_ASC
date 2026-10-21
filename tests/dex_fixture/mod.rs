@@ -525,3 +525,36 @@ pub fn make_dex041_container() -> Vec<u8> {
     put_u32(&mut data, second_off + 0x70, total);
     data
 }
+
+/// A DEX whose string pool holds arbitrary values and defines no classes.
+///
+/// `liststring` walks the string table rather than `class_defs`, so its fixture
+/// needs values that are not class descriptors: resource URLs, SQL, UTF-8 text.
+pub fn make_strings_dex(values: &[&str]) -> Vec<u8> {
+    let header_size = 0x70;
+    let mut buf = vec![0; header_size];
+    let string_ids = buf.len();
+    buf.resize(buf.len() + 4 * values.len(), 0);
+    let data_off = buf.len();
+
+    for (index, value) in values.iter().enumerate() {
+        let string_off = buf.len();
+        put_u32(&mut buf, string_ids + index * 4, string_off as u32);
+        // The leading uleb128 stores UTF-16 code units, not byte length.
+        buf.extend_from_slice(&uleb(value.encode_utf16().count()));
+        buf.extend_from_slice(value.as_bytes());
+        buf.push(0);
+    }
+
+    let file_size = buf.len();
+    buf[..4].copy_from_slice(b"dex\n");
+    buf[4..7].copy_from_slice(b"035");
+    put_u32(&mut buf, 0x20, file_size as u32);
+    put_u32(&mut buf, 0x24, header_size as u32);
+    // Only the string section is populated; the other id tables stay zero.
+    put_u32(&mut buf, 0x38, values.len() as u32);
+    put_u32(&mut buf, 0x3c, string_ids as u32);
+    put_u32(&mut buf, 0x68, (file_size - data_off) as u32);
+    put_u32(&mut buf, 0x6c, data_off as u32);
+    buf
+}
