@@ -12,7 +12,8 @@ use memmap2::{Mmap, MmapOptions};
 
 use crate::asc_client::apk::dex_reader::{
     _dex_defines_class as _defines_class, class_defines_prefix_len, class_names_prefix_len,
-    list_dex_classes, write_dex_class_names as _write_classes,
+    list_dex_classes, list_dex_strings, write_dex_class_names as _write_classes,
+    write_dex_strings as _write_strings,
 };
 use crate::asc_client::apk::loader::{
     _inflate_dex as _load_dex, _inflate_dex_into, _inflate_dex_into_with,
@@ -624,6 +625,50 @@ impl ApkHandler {
             |buf| {
                 let (text, count) = render_dex_methods(buf, class.as_deref(), filter.as_deref())?;
                 Ok((vec![text.into_bytes()], count))
+            },
+            None,
+            |chunk| emit(&chunk),
+        )
+    }
+
+    /// List string pool values as individual records, preserving the row API.
+    /// CLI consumers can use `for_each_string_chunk` to avoid collecting rows.
+    pub fn list_strings(&self, filter: Option<&str>) -> Result<Vec<String>, String> {
+        let filter = filter.map(str::to_lowercase);
+        let mut rows = Vec::new();
+        self._stream_dex_items(
+            "string",
+            |buf| {
+                // One record per value: a pool can hold strings with newlines,
+                // and the row API must not reframe them as CLI lines.
+                let values = list_dex_strings(buf, filter.as_deref())?;
+                let count = values.len();
+                Ok((values.into_iter().map(String::into_bytes).collect(), count))
+            },
+            // Every string is potentially needed, so entries inflate in full.
+            None,
+            |bytes| {
+                let value = String::from_utf8(bytes)
+                    .map_err(|error| format!("invalid UTF-8 string value: {error}"))?;
+                rows.push(value);
+                Ok(())
+            },
+        )?;
+        Ok(rows)
+    }
+
+    /// Stream string values (one per line) in DEX table order.
+    pub fn for_each_string_chunk<E>(&self, filter: Option<&str>, mut emit: E) -> Result<usize, String>
+    where
+        E: FnMut(&[u8]) -> Result<(), String>,
+    {
+        let filter = filter.map(str::to_lowercase);
+        self._stream_dex_items(
+            "string",
+            |buf| {
+                let mut out = Vec::new();
+                let count = _write_strings(buf, filter.as_deref(), &mut out)?;
+                Ok((vec![out], count))
             },
             None,
             |chunk| emit(&chunk),

@@ -10,7 +10,10 @@ use memchr::memmem::Finder;
 use std::collections::HashSet;
 use std::time::Instant;
 
-fn matches_name(raw: &[u8], query: &str) -> bool {
+/// Case insensitive substring match over a raw string_data_item payload.
+/// Shared with `liststring` so both agree on what the filter matches; `query`
+/// is expected to be lowercased by the caller.
+pub(crate) fn matches_name(raw: &[u8], query: &str) -> bool {
     if query.is_empty() {
         return true;
     }

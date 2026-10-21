@@ -1,6 +1,7 @@
 // Auth: MG1937
 // Strict 1:1 translation from Python apk/dex_reader.py
 
+use crate::asc_core::findrefs::locator::string_locator::matches_name;
 use crate::asc_core::utils::structs::_STRUCT_I;
 use crate::asc_core::utils::tinydex::_decode_mutf8_fallback;
 
@@ -397,4 +398,67 @@ pub(crate) fn list_dex_classes(
         }
     }
     Ok(names)
+}
+
+/// Walk the string pool in table order, handing every value that passes
+/// `filter` to `sink`. String index is what a `findrefs` row resolves through,
+/// so table order is the only order this reports.
+fn for_each_dex_string<S>(buf: &[u8], filter: Option<&str>, mut sink: S) -> Result<usize, String>
+where
+    S: FnMut(&str) -> Result<(), String>,
+{
+    if buf.len() < 0x70 || buf[..3] != *b"dex" {
+        return Err("invalid DEX header".to_owned());
+    }
+
+    let string_ids_size = _STRUCT_I::unpack_from(buf, 0x38) as usize;
+    let string_ids_off = _STRUCT_I::unpack_from(buf, 0x3C) as usize;
+    if string_ids_size == 0 {
+        return Ok(0);
+    }
+    let ids_end = string_ids_off
+        .checked_add(string_ids_size.saturating_mul(4))
+        .filter(|&end| end <= buf.len())
+        .ok_or_else(|| "bad string_ids range".to_owned())?;
+
+    let mut count = 0;
+    let mut off = string_ids_off;
+    while off < ids_end {
+        let string_off = _STRUCT_I::unpack_from(buf, off) as usize;
+        off += 4;
+        if string_off >= buf.len() {
+            return Err("bad string_data_off".to_owned());
+        }
+        let raw = _read_string_data_bytes(buf, string_off)?;
+        if !filter.is_none_or(|filter| matches_name(raw, filter)) {
+            continue;
+        }
+        sink(&_decode_name(raw))?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Write string values one per line, skipping the ones `filter` rejects.
+/// `list_dex_strings` is the record level API that keeps embedded newlines.
+pub(crate) fn write_dex_strings(
+    buf: &[u8],
+    filter: Option<&str>,
+    out: &mut Vec<u8>,
+) -> Result<usize, String> {
+    for_each_dex_string(buf, filter, |value| {
+        out.reserve(value.len() + 1);
+        out.extend_from_slice(value.as_bytes());
+        out.push(b'\n');
+        Ok(())
+    })
+}
+
+pub(crate) fn list_dex_strings(buf: &[u8], filter: Option<&str>) -> Result<Vec<String>, String> {
+    let mut values = Vec::new();
+    for_each_dex_string(buf, filter, |value| {
+        values.push(value.to_owned());
+        Ok(())
+    })?;
+    Ok(values)
 }
