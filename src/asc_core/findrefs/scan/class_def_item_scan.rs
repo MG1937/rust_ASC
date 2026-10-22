@@ -36,6 +36,7 @@ impl<'a, 'b> ClassDefItemScanner<'a, 'b> {
         while let Some(found) = memchr::memmem::find(&self.submem[pos..], &needle) {
             let match_start = pos + found;
             pos = match_start + needle.len();
+            // superclass idx - 0x8 should goto start offset of class_def_item
             let Some(class_def_off) = match_start.checked_sub(0x8) else {
                 continue;
             };

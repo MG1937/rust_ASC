@@ -94,7 +94,7 @@ fn direct_method_queries_match_indexed_queries_for_all_match_modes() {
                                 method_precise,
                             };
                             assert_eq!(
-                                direct.locate_unindexed(&query, &strings, &types),
+                                direct.locate(&query, &strings, &types),
                                 indexed.locate(&query, &strings, &types),
                                 "class={class:?}, class_precise={class_precise}, name={name:?}, \
                                  method_precise={method_precise}, reverse_methods={reverse_methods}, \
@@ -125,6 +125,6 @@ fn direct_method_queries_preserve_exact_names_and_repeated_owners() {
         (MethodFind::new(Some(("Lalpha/".to_owned(), false)), None), HashSet::from([0, 1, 2, 3])),
         (MethodFind::new(Some(("Lbeta/C;".to_owned(), true)), Some("SEC".to_owned())), HashSet::from([4])),
     ] {
-        assert_eq!(locator.locate_unindexed(&query, &strings, &types), expected);
+        assert_eq!(locator.locate(&query, &strings, &types), expected);
     }
 }

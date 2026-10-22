@@ -124,6 +124,13 @@ fn _mask_table(values: &[u8]) -> [u8; 256] {
 }
 
 /// 65536-bit occupancy bitmap over index values.
+/// 20261022
+/// change idxs to bitmap, alloc (1024 * u64 = 65536bits) size vec space
+/// every element inside this vec is a bucket
+/// Android document described, max idx len is u16(65535bit) if exclude const-string/jumbo
+/// so we let idx >> 6 (ps: 2**6=64) choose a bucket id
+/// due to every element is 64bit, so every bit can fill by 1u64 << (idx&63)
+/// idx&63 stand for the rest bit "ignored" by idx >> 6 when choose bucket id
 fn _idx_bits(idxs: &HashSet<u32>) -> Vec<u64> {
     let mut bits = vec![0u64; (u16::MAX as usize + 1) / 64];
     for &idx in idxs {

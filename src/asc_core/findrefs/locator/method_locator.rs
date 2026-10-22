@@ -179,7 +179,7 @@ impl<'a> MethodLocator<'a> {
     /// Each method row already stores its owner and name indices; selecting rows
     /// after resolving the query is cheaper than indexing every method first.
     /// The indexed `locate` API remains available for callers reusing a locator.
-    pub fn locate_unindexed(
+    pub fn locate(
         &self,
         find: &MethodFind,
         str_locator: &StringLocator,
@@ -250,6 +250,7 @@ impl<'a> MethodLocator<'a> {
         found
     }
 
+    /*
     // find struct: {"class" : ["None|clz", precise], "method" : "None|fuzzy_method"}
     // the two values cannot both be None
     // if class not None, input clz must be precise dalvik format value or fuzzy clz
@@ -352,5 +353,5 @@ impl<'a> MethodLocator<'a> {
         }
         self._debug_log("locate", t_start, Some(ret.len()));
         ret
-    }
+    }*/
 }

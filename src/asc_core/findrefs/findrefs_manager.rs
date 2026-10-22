@@ -197,21 +197,30 @@ impl<'a> FindRefManager<'a> {
         let profile = std::env::var_os("RASC_PROFILE").is_some();
         let ph0 = profile.then(std::time::Instant::now);
         // Phase 0: build all required locators first (drop mutable refs before Phase 1)
-        if find.string.is_some() || find.type_.is_some() || find.method.is_some() || find.field.is_some() {
+        if find.string.is_some()
+            || find.type_.is_some()
+            || find.method.is_some()
+            || find.field.is_some()
+        {
             let _ = self._get_str_locator(true);
         }
         if find.type_.is_some() || find.method.is_some() || find.field.is_some() {
             // Only type queries or fuzzy declaring-class filters use the type
             // adjacency map. Exact/unscoped member queries read the id tables.
             let fuzzy_method_class = find.method.as_ref().is_some_and(|query| {
-                query.class.as_ref().is_some_and(|(name, precise)| !precise && !name.is_empty())
+                query
+                    .class
+                    .as_ref()
+                    .is_some_and(|(name, precise)| !precise && !name.is_empty())
             });
             let fuzzy_field_class = find.field.as_ref().is_some_and(|query| {
-                query.class.as_ref().is_some_and(|(name, precise)| !precise && !name.is_empty())
+                query
+                    .class
+                    .as_ref()
+                    .is_some_and(|(name, precise)| !precise && !name.is_empty())
             });
-            let _ = self._get_type_locator(
-                find.type_.is_some() || fuzzy_method_class || fuzzy_field_class,
-            );
+            let _ = self
+                ._get_type_locator(find.type_.is_some() || fuzzy_method_class || fuzzy_field_class);
         }
         if find.method.is_some() {
             let _ = self._get_method_locator(false);
@@ -231,35 +240,51 @@ impl<'a> FindRefManager<'a> {
 
         if let Some(ref s) = find.string {
             let r = self.str_locator.as_ref().unwrap().locate(s);
-            if !r.is_empty() { has_idx = true; }
+            if !r.is_empty() {
+                has_idx = true;
+            }
             string_result = Some(r);
-        } else { string_result = None; }
+        } else {
+            string_result = None;
+        }
 
         if let Some(ref t) = find.type_ {
             let str_loc = self.str_locator.as_ref().unwrap();
             let type_loc = self.type_locator.as_ref().unwrap();
             let r = type_loc.locate(t, str_loc);
-            if !r.is_empty() { has_idx = true; }
+            if !r.is_empty() {
+                has_idx = true;
+            }
             type_result = Some(r);
-        } else { type_result = None; }
+        } else {
+            type_result = None;
+        }
 
         if let Some(ref m) = find.method {
             let str_loc = self.str_locator.as_ref().unwrap();
             let type_loc = self.type_locator.as_ref().unwrap();
             let method_loc = self.method_locator.as_ref().unwrap();
-            let r = method_loc.locate_unindexed(m, str_loc, type_loc);
-            if !r.is_empty() { has_idx = true; }
+            let r = method_loc.locate(m, str_loc, type_loc);
+            if !r.is_empty() {
+                has_idx = true;
+            }
             method_result = Some(r);
-        } else { method_result = None; }
+        } else {
+            method_result = None;
+        }
 
         if let Some(ref f) = find.field {
             let str_loc = self.str_locator.as_ref().unwrap();
             let type_loc = self.type_locator.as_ref().unwrap();
             let field_loc = self.field_locator.as_ref().unwrap();
-            let r = field_loc.locate_unindexed(f, str_loc, type_loc);
-            if !r.is_empty() { has_idx = true; }
+            let r = field_loc.locate(f, str_loc, type_loc);
+            if !r.is_empty() {
+                has_idx = true;
+            }
             field_result = Some(r);
-        } else { field_result = None; }
+        } else {
+            field_result = None;
+        }
 
         let ph2 = profile.then(std::time::Instant::now);
         if profile {
@@ -317,9 +342,8 @@ impl<'a> FindRefManager<'a> {
         }
         let mark_idx = std::mem::take(&mut scanner.mark_idx);
 
-        let get_or_default = |key: &str| -> Vec<Option<Vec<u32>>> {
-            scan_map.get(key).cloned().unwrap_or_default()
-        };
+        let get_or_default =
+            |key: &str| -> Vec<Option<Vec<u32>>> { scan_map.get(key).cloned().unwrap_or_default() };
 
         Some(FindRefResult::Refs(FindRefOutput {
             string: get_or_default("string"),
