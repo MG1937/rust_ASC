@@ -134,8 +134,8 @@ impl<'a> DexIndexMapper<'a> {
 
     pub fn set_class(&mut self, clz: &mut DexClass) {
         self.class_obj_idx = clz.index;
-        self.methods_obj = clz.methods();
-        self.fields_obj = clz.fields();
+        self.methods_obj = clz.methods().to_vec();
+        self.fields_obj = clz.fields().to_vec();
     }
 
     /// Convert to the simple IndexMapper used by dex_parser rebuild functions

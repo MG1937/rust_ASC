@@ -63,7 +63,11 @@ impl<'a> FieldLocator<'a> {
         if self.parsed {
             return;
         }
-        let t_start = if self.base.debug { Some(Instant::now()) } else { None };
+        let t_start = if self.base.debug {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let (field_ids_off, field_ids_size) = self.base.dex.header.fields;
         let mut field_ids_off = field_ids_off as usize;
         let clz_maps = &mut self.clz_maps;
@@ -73,35 +77,17 @@ impl<'a> FieldLocator<'a> {
         for field_idx in 0..field_ids_size {
             let (class_idx, _type_idx, name_idx) = _STRUCT_HHI::unpack_from(buf, field_ids_off);
             field_ids_off += 8;
-            clz_maps.entry(class_idx as u32).or_insert_with(HashSet::new).insert(field_idx);
-            field_maps.entry(name_idx).or_insert_with(HashSet::new).insert(field_idx);
+            clz_maps
+                .entry(class_idx as u32)
+                .or_insert_with(HashSet::new)
+                .insert(field_idx);
+            field_maps
+                .entry(name_idx)
+                .or_insert_with(HashSet::new)
+                .insert(field_idx);
         }
         self.parsed = true;
         self._debug_log("build_map", t_start, Some(field_ids_size as usize));
-    }
-
-    // which is different with type locator, this func for precise clz name
-    // while type locator is for fuzzy search
-    pub fn _find_type_idx_precisely(&self, clz: &str) -> i32 {
-        let mut left: i32 = 0;
-        let (type_ids_off, type_ids_size) = self.base.dex.header.types;
-        let mut right = type_ids_size as i32 - 1;
-        let buf = self.base.buf;
-
-        while left <= right {
-            let mid = (left + right) >> 1;
-            let desc_idx = _STRUCT_I::unpack_from(buf, (type_ids_off as usize) + ((mid as usize) << 2)) as usize;
-            let desc = &self.base.dex.get_string(desc_idx).value;
-            if desc == clz {
-                return mid;
-            }
-            if desc.as_str() < clz {
-                left = mid + 1;
-            } else {
-                right = mid - 1;
-            }
-        }
-        -1
     }
 
     pub fn _collect_clz_fids(&self, type_idxs: &HashSet<u32>) -> HashSet<u32> {
@@ -155,7 +141,7 @@ impl<'a> FieldLocator<'a> {
         let precise_class = class.is_some_and(|(_, precise)| *precise);
         let class_indices = class.map(|(name, precise)| {
             if *precise {
-                let index = self._find_type_idx_precisely(name);
+                let index = type_locator._find_type_idx_precisely(name);
                 if index < 0 {
                     HashSet::new()
                 } else {
@@ -217,8 +203,17 @@ impl<'a> FieldLocator<'a> {
     // if field not None, input field name can be a fuzzy value
     // if class is None, find out all field idx that contains the fuzzy field name while dont give shit about class
     // if class is set, find out all fields below this class which matches the field condition
-    pub fn locate(&self, find: &FieldFind, str_locator: &StringLocator, type_locator: &TypeLocator) -> HashSet<u32> {
-        let t_start = if self.base.debug { Some(Instant::now()) } else { None };
+    pub fn locate(
+        &self,
+        find: &FieldFind,
+        str_locator: &StringLocator,
+        type_locator: &TypeLocator,
+    ) -> HashSet<u32> {
+        let t_start = if self.base.debug {
+            Some(Instant::now())
+        } else {
+            None
+        };
 
         let mut clz = find.class.as_ref();
         let field = find.field.as_ref();
@@ -231,7 +226,11 @@ impl<'a> FieldLocator<'a> {
                 clz_precise = *precise;
             }
         }
-        let field = if field.map_or(false, |s| s.is_empty()) { None } else { field };
+        let field = if field.map_or(false, |s| s.is_empty()) {
+            None
+        } else {
+            field
+        };
         if clz.is_none() && field.is_none() {
             self._debug_log("locate", t_start, Some(0));
             return HashSet::new();
@@ -261,7 +260,7 @@ impl<'a> FieldLocator<'a> {
 
         let (clz_str, _) = clz.unwrap();
         if clz_precise {
-            let type_idx = self._find_type_idx_precisely(clz_str);
+            let type_idx = type_locator._find_type_idx_precisely(clz_str);
             if type_idx == -1 {
                 self._debug_log("locate", t_start, Some(0));
                 return HashSet::new();
@@ -278,8 +277,7 @@ impl<'a> FieldLocator<'a> {
                         self._debug_log("locate", t_start, Some(clz_fids_set.len()));
                         return clz_fids_set;
                     }
-                    let ret =
-                        self._match_clz_fids(&clz_fids_set, field.unwrap(), field_precise);
+                    let ret = self._match_clz_fids(&clz_fids_set, field.unwrap(), field_precise);
                     self._debug_log("locate", t_start, Some(ret.len()));
                     return ret;
                 }

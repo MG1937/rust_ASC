@@ -93,6 +93,8 @@ fn search_does_not_require_a_decompiler() {
         type_: None,
         method: None,
         field: None,
+        extends: None,
+        impl_: None,
     };
     let lines = AscHandler::new(false).findrefs(
         "fixture.dex",

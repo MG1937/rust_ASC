@@ -5,6 +5,7 @@ use crate::asc_core::findrefs::locator::insn_locator::InsnLocator;
 use crate::asc_core::findrefs::locator::method_locator::{MethodFind, MethodLocator};
 use crate::asc_core::findrefs::locator::string_locator::StringLocator;
 use crate::asc_core::findrefs::locator::type_locator::TypeLocator;
+use crate::asc_core::findrefs::scan::class_def_item_scan::ClassDefItemScanner;
 use crate::asc_core::findrefs::scan::code_item_scan::CodeItemScanner;
 use crate::asc_core::utils::tinydex::DEX;
 use std::collections::{HashMap, HashSet};
@@ -15,6 +16,8 @@ pub struct FindRefInput {
     pub type_: Option<String>,
     pub method: Option<MethodFind>,
     pub field: Option<FieldFind>,
+    pub extends: Option<String>,
+    pub impl_: Option<String>,
 }
 
 impl FindRefInput {
@@ -24,11 +27,23 @@ impl FindRefInput {
         method: Option<MethodFind>,
         field: Option<FieldFind>,
     ) -> Self {
-        FindRefInput { string, type_, method, field }
+        FindRefInput {
+            string,
+            type_,
+            method,
+            field,
+            extends: None,
+            impl_: None,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.string.is_none() && self.type_.is_none() && self.method.is_none() && self.field.is_none()
+        self.string.is_none()
+            && self.type_.is_none()
+            && self.method.is_none()
+            && self.field.is_none()
+            && self.extends.is_none()
+            && self.impl_.is_none()
     }
 }
 
@@ -38,6 +53,17 @@ pub struct FindRefOutput {
     pub method: Vec<Option<Vec<u32>>>,
     pub field: Vec<Option<Vec<u32>>>,
     pub mark_idx: Vec<u32>,
+}
+
+/// Unified result of a reference query.
+///
+/// `extends`/`impl` are class-definition lookups that short-circuit the opcode
+/// scan, so they cannot be expressed as containing-method indexes.
+pub enum FindRefResult {
+    /// `extends`/`impl`: class def indexes (a class's `class_idx` type index).
+    ClassDefs(Vec<u32>),
+    /// string/type/method/field: located indexes plus containing methods.
+    Refs(FindRefOutput),
 }
 
 pub struct FindRefManager<'a> {
@@ -136,9 +162,36 @@ impl<'a> FindRefManager<'a> {
         self.insn_locator.as_mut().unwrap()
     }
 
-    // find struct: {"string" : "foo", "type" : "bar", "method" : {...}, "field" : {...}}
-    // locate result will overwrite input find in-place, then scanner writes ref mids back into each key
-    pub fn find_ref(&mut self, find: &FindRefInput, mark: bool) -> Option<FindRefOutput> {
+    /// Locate classes whose superclass is the target class.
+    fn scan_extends(&mut self, target_clz: &str) -> Vec<u32> {
+        let type_locator = self._get_type_locator(false);
+        ClassDefItemScanner::new(type_locator).scan_extends(target_clz)
+    }
+
+    /// Locate classes that implement the target interface.
+    fn scan_implements(&mut self, target_clz: &str) -> Vec<u32> {
+        let type_locator = self._get_type_locator(false);
+        ClassDefItemScanner::new(type_locator).scan_implements(target_clz)
+    }
+
+    /// Single entry point for every findrefs query.
+    ///
+    /// `extends`/`impl` are handled here and returned as
+    /// [`FindRefResult::ClassDefs`]; they short-circuit the opcode scan. All
+    /// other keys locate their indexes, write them back through the code-item
+    /// scanner and return [`FindRefResult::Refs`].
+    ///
+    /// Callers must not reach for the class-def scanner directly: keeping the
+    /// dispatch here is what keeps `extends`/`impl` and opcode queries on one
+    /// contract.
+    pub fn find_ref(&mut self, find: &FindRefInput, mark: bool) -> Option<FindRefResult> {
+        if let Some(target) = find.extends.as_deref() {
+            return Some(FindRefResult::ClassDefs(self.scan_extends(target)));
+        }
+        if let Some(target) = find.impl_.as_deref() {
+            return Some(FindRefResult::ClassDefs(self.scan_implements(target)));
+        }
+
         let mut has_idx = false;
 
         let profile = std::env::var_os("RASC_PROFILE").is_some();
@@ -220,13 +273,13 @@ impl<'a> FindRefManager<'a> {
             return None;
         }
         if !has_idx {
-            return Some(FindRefOutput {
+            return Some(FindRefResult::Refs(FindRefOutput {
                 string: string_result.map(|_| Vec::new()).unwrap_or_default(),
                 type_: type_result.map(|_| Vec::new()).unwrap_or_default(),
                 method: method_result.map(|_| Vec::new()).unwrap_or_default(),
                 field: field_result.map(|_| Vec::new()).unwrap_or_default(),
                 mark_idx: Vec::new(),
-            });
+            }));
         }
 
         // Phase 2: build scan map and run scanner
@@ -268,12 +321,12 @@ impl<'a> FindRefManager<'a> {
             scan_map.get(key).cloned().unwrap_or_default()
         };
 
-        Some(FindRefOutput {
+        Some(FindRefResult::Refs(FindRefOutput {
             string: get_or_default("string"),
             type_: get_or_default("type"),
             method: get_or_default("method"),
             field: get_or_default("field"),
             mark_idx,
-        })
+        }))
     }
 }

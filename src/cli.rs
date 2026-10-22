@@ -65,12 +65,16 @@ fn _build_member_find(
             type_: None,
             method: Some(MethodFind::new(class, name.map(str::to_owned))),
             field: None,
+            extends: None,
+            impl_: None,
         }),
         "field" => Ok(FindRefInput {
             string: None,
             type_: None,
             method: None,
             field: Some(FieldFind::new(class, name.map(str::to_owned))),
+            extends: None,
+            impl_: None,
         }),
         _ => Err(format!("Unknown member type: {key}")),
     }
@@ -86,13 +90,28 @@ fn _get_find_query(args: &ArgMatches) -> Result<(String, FindRefInput), String> 
             type_: None,
             method: None,
             field: None,
+            extends: None,
+            impl_: None,
         },
         "type" => FindRefInput {
             string: None,
             type_: find_args.get_one::<String>("value").cloned(),
             method: None,
             field: None,
+            extends: None,
+            impl_: None,
         },
+        "extends" | "impl" => {
+            let target = _format_class_name(find_args.get_one::<String>("value").unwrap())?;
+            FindRefInput {
+                string: None,
+                type_: None,
+                method: None,
+                field: None,
+                extends: (find_type == "extends").then(|| target.clone()),
+                impl_: (find_type == "impl").then_some(target),
+            }
+        }
         "method" | "field" => _build_member_find(
             find_type,
             find_args
@@ -414,6 +433,8 @@ pub fn _build_main_parser() -> Command {
             .after_help(
                 "examples:\n  rust_ASC findrefs app.apk string token -o string_refs.txt\n  \
                  rust_ASC findrefs app.apk type com.poc.Main\n  \
+                 rust_ASC findrefs app.apk extends android.app.Activity -o subclasses.txt\n  \
+                 rust_ASC findrefs app.apk impl android.os.IInterface -o impls.txt\n  \
                  rust_ASC findrefs app.apk method onCreate --class com.poc.Main\n  \
                  rust_ASC findrefs app.apk method notify --class poc --fuzzy-class -o method_refs.txt\n  \
                  rust_ASC findrefs app.apk field changeQuickRedirect -o field_refs.txt",
@@ -441,6 +462,36 @@ pub fn _build_main_parser() -> Command {
                             .help("Also write reference search output to this file."),
                     )
                     .arg(Arg::new("value").required(true).help("Fuzzy type pattern.")),
+            )
+            .subcommand(
+                Command::new("extends")
+                    .about("Find classes that extend the target class.")
+                    .arg(
+                        Arg::new("output")
+                            .short('o')
+                            .long("output")
+                            .help("Also write subclass output to this file."),
+                    )
+                    .arg(
+                        Arg::new("value")
+                            .required(true)
+                            .help("Target class in dotted or Dalvik form."),
+                    ),
+            )
+            .subcommand(
+                Command::new("impl")
+                    .about("Find classes that implement the target interface.")
+                    .arg(
+                        Arg::new("output")
+                            .short('o')
+                            .long("output")
+                            .help("Also write implementor output to this file."),
+                    )
+                    .arg(
+                        Arg::new("value")
+                            .required(true)
+                            .help("Target interface in dotted or Dalvik form."),
+                    ),
             )
             .subcommand(member_parser(
                 "method",
@@ -470,6 +521,8 @@ pub fn _build_main_parser() -> Command {
              rust_ASC getmanifest app.apk -o AndroidManifest.xml\n  \
              rust_ASC findrefs app.apk string token -o string_refs.txt\n  \
              rust_ASC findrefs app.apk type com.poc.Main\n  \
+             rust_ASC findrefs app.apk extends android.app.Activity -o subclasses.txt\n  \
+             rust_ASC findrefs app.apk impl android.os.IInterface -o impls.txt\n  \
              rust_ASC findrefs app.apk method onCreate --class com.poc.Main\n  \
              rust_ASC findrefs app.apk method notify --class MainActivity --fuzzy-class -o method_refs.txt\n  \
              rust_ASC findrefs app.apk field apiKey -o field_refs.txt",

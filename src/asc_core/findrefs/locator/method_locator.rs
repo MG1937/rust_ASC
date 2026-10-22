@@ -41,10 +41,10 @@ impl MethodFind {
 pub struct MethodLocator<'a> {
     pub base: BaseLocator<'a>,
     pub parsed: bool,
-    clz_offsets: Vec<u32>, // len = type_ids_size + 1
-    clz_mids: Vec<u32>,    // method idxs grouped by class_idx
+    clz_offsets: Vec<u32>,  // len = type_ids_size + 1
+    clz_mids: Vec<u32>,     // method idxs grouped by class_idx
     name_offsets: Vec<u32>, // len = string_ids_size + 1
-    name_mids: Vec<u32>,   // method idxs grouped by name_idx
+    name_mids: Vec<u32>,    // method idxs grouped by name_idx
 }
 
 impl<'a> MethodLocator<'a> {
@@ -77,7 +77,10 @@ impl<'a> MethodLocator<'a> {
 
     fn name_slice(&self, name_idx: u32) -> &[u32] {
         let index = name_idx as usize;
-        match (self.name_offsets.get(index), self.name_offsets.get(index + 1)) {
+        match (
+            self.name_offsets.get(index),
+            self.name_offsets.get(index + 1),
+        ) {
             (Some(&start), Some(&end)) => &self.name_mids[start as usize..end as usize],
             _ => &[],
         }
@@ -87,7 +90,11 @@ impl<'a> MethodLocator<'a> {
         if self.parsed {
             return;
         }
-        let t_start = if self.base.debug { Some(Instant::now()) } else { None };
+        let t_start = if self.base.debug {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let (method_ids_off, method_ids_size) = self.base.dex.header.methods;
         let (_, type_ids_size) = self.base.dex.header.types;
         let (_, string_ids_size) = self.base.dex.header.strings;
@@ -139,30 +146,6 @@ impl<'a> MethodLocator<'a> {
         self._debug_log("build_map", t_start, Some(method_ids_size as usize));
     }
 
-    // which is different with type locator, this func for precise clz name
-    // while type locator is for fuzzy search
-    pub fn _find_type_idx_precisely(&self, clz: &str) -> i32 {
-        let mut left: i32 = 0;
-        let (type_ids_off, type_ids_size) = self.base.dex.header.types;
-        let mut right = type_ids_size as i32 - 1;
-        let buf = self.base.buf;
-
-        while left <= right {
-            let mid = (left + right) >> 1;
-            let desc_idx = _STRUCT_I::unpack_from(buf, (type_ids_off as usize) + ((mid as usize) << 2)) as usize;
-            let desc = &self.base.dex.get_string(desc_idx).value;
-            if desc == clz {
-                return mid;
-            }
-            if desc.as_str() < clz {
-                left = mid + 1;
-            } else {
-                right = mid - 1;
-            }
-        }
-        -1
-    }
-
     pub fn _collect_clz_mids(&self, type_idxs: &HashSet<u32>) -> HashSet<u32> {
         let mut ret = HashSet::new();
         for &type_idx in type_idxs {
@@ -211,7 +194,7 @@ impl<'a> MethodLocator<'a> {
         let precise_class = class.is_some_and(|(_, precise)| *precise);
         let class_indices = class.map(|(name, precise)| {
             if *precise {
-                let index = self._find_type_idx_precisely(name);
+                let index = type_locator._find_type_idx_precisely(name);
                 if index < 0 {
                     HashSet::new()
                 } else {
@@ -273,8 +256,17 @@ impl<'a> MethodLocator<'a> {
     // if method not None, input method name can be a fuzzy value
     // if class is None, find out all method idx that contains the fuzzy method name while dont give shit about class
     // if class is set, find out all methods below this class which matches the method condition
-    pub fn locate(&self, find: &MethodFind, str_locator: &StringLocator, type_locator: &TypeLocator) -> HashSet<u32> {
-        let t_start = if self.base.debug { Some(Instant::now()) } else { None };
+    pub fn locate(
+        &self,
+        find: &MethodFind,
+        str_locator: &StringLocator,
+        type_locator: &TypeLocator,
+    ) -> HashSet<u32> {
+        let t_start = if self.base.debug {
+            Some(Instant::now())
+        } else {
+            None
+        };
 
         let mut clz = find.class.as_ref();
         let method = find.method.as_ref();
@@ -287,7 +279,11 @@ impl<'a> MethodLocator<'a> {
                 clz_precise = *precise;
             }
         }
-        let method = if method.map_or(false, |s| s.is_empty()) { None } else { method };
+        let method = if method.map_or(false, |s| s.is_empty()) {
+            None
+        } else {
+            method
+        };
         if clz.is_none() && method.is_none() {
             self._debug_log("locate", t_start, Some(0));
             return HashSet::new();
@@ -314,7 +310,7 @@ impl<'a> MethodLocator<'a> {
 
         let (clz_str, _) = clz.unwrap();
         if clz_precise {
-            let type_idx = self._find_type_idx_precisely(clz_str);
+            let type_idx = type_locator._find_type_idx_precisely(clz_str);
             if type_idx == -1 {
                 self._debug_log("locate", t_start, Some(0));
                 return HashSet::new();

@@ -43,11 +43,39 @@ impl<'a> TypeLocator<'a> {
         }
     }
 
+    pub fn _find_type_idx_precisely(&self, clz: &str) -> i32 {
+        let mut left: i32 = 0;
+        let (type_ids_off, type_ids_size) = self.base.dex.header.types;
+        let mut right = type_ids_size as i32 - 1;
+        let buf = self.base.buf;
+
+        while left <= right {
+            let mid = (left + right) >> 1;
+            let desc_idx =
+                _STRUCT_I::unpack_from(buf, (type_ids_off as usize) + ((mid as usize) << 2))
+                    as usize;
+            let desc = &self.base.dex.get_string(desc_idx).value;
+            if desc == clz {
+                return mid;
+            }
+            if desc.as_str() < clz {
+                left = mid + 1;
+            } else {
+                right = mid - 1;
+            }
+        }
+        -1
+    }
+
     pub fn _build_map(&mut self) {
         if self.parsed {
             return;
         }
-        let t_start = if self.base.debug { Some(Instant::now()) } else { None };
+        let t_start = if self.base.debug {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let (type_ids_off, type_ids_size) = self.base.dex.header.types;
         let (_, string_ids_size) = self.base.dex.header.strings;
         let buf = self.base.buf;
@@ -83,7 +111,11 @@ impl<'a> TypeLocator<'a> {
     }
 
     pub fn locate(&self, type_str: &str, str_locator: &StringLocator) -> HashSet<u32> {
-        let t_start = if self.base.debug { Some(Instant::now()) } else { None };
+        let t_start = if self.base.debug {
+            Some(Instant::now())
+        } else {
+            None
+        };
         if type_str.is_empty() {
             self._debug_log("locate", t_start, Some(0));
             return HashSet::new();
