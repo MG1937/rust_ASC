@@ -5,7 +5,9 @@ use std::collections::{HashMap, HashSet};
 use std::vec;
 
 use crate::asc_core::core::dex::dex_manager::DexManager;
-use crate::asc_core::findrefs::findrefs_manager::{FindRefInput, FindRefManager};
+use crate::asc_core::findrefs::findrefs_manager::{
+    FindRefInput, FindRefManager, FindRefResult,
+};
 use crate::asc_core::findrefs::locator::field_locator::FieldFind;
 use crate::asc_core::findrefs::locator::method_locator::MethodFind;
 use crate::asc_core::utils::decompiler::{
@@ -88,7 +90,7 @@ impl AscHandler {
         self._findrefs(dex_name, &dex, find_type, find, aggregate)
     }
 
-    fn _findrefs(
+    pub(crate) fn _findrefs(
         &self,
         dex_name: &str,
         dex: &DEX,
@@ -97,12 +99,42 @@ impl AscHandler {
         aggregate: bool,
     ) -> Vec<String> {
         let mut ref_manager = FindRefManager::new(dex, self.debug);
+        let profile = std::env::var_os("RASC_PROFILE").is_some();
+        let tf0 = profile.then(std::time::Instant::now);
         let output = ref_manager.find_ref(find, true);
+        let tf1 = profile.then(std::time::Instant::now);
 
-        let Some(out) = output else {
+        let Some(output) = output else {
             return Vec::new();
         };
 
+        if profile {
+            eprintln!("[PROF] find_ref={:.3}ms", (tf1.unwrap() - tf0.unwrap()).as_secs_f64() * 1e3);
+        }
+        let out = match output {
+            FindRefResult::ClassDefs(class_idxs) => {
+                let (target, verb) = if find_type == "extends" {
+                    (find.extends.as_deref(), "extends")
+                } else {
+                    (find.impl_.as_deref(), "implements")
+                };
+                let Some(target) = target else {
+                    return Vec::new();
+                };
+                return class_idxs
+                    .into_iter()
+                    .map(|class_idx| {
+                        format!(
+                            "{} | {} {verb} {}",
+                            dex_name,
+                            dex.get_type(class_idx).descriptor,
+                            target
+                        )
+                    })
+                    .collect();
+            }
+            FindRefResult::Refs(out) => out,
+        };
         let matched_idxs: Vec<usize> = out.mark_idx.iter().map(|&x| x as usize).collect();
 
         let mids: &Vec<Option<Vec<u32>>> = match find_type {

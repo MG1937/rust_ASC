@@ -18,7 +18,7 @@ https://github.com/user-attachments/assets/f1f71a75-1eca-4647-89ce-406ed2c63c6b
 
 - Search code references for strings, types, methods, and fields across every DEX in an APK.
 - Locate and decompile one class directly from an APK.
-- List classes and decode `AndroidManifest.xml`.
+- List classes and defined methods, and decode `AndroidManifest.xml`.
 - Export pseudocode for every class in an APK with the public API of [MG1937/radguard](https://github.com/MG1937/radguard).
 - Handle multi-DEX APKs and DEX 041 logical containers.
 - Use memory-mapped APK access and no on-disk cache.
@@ -65,7 +65,7 @@ On Windows, the executable name is `rust_ASC.exe`.
 
 ## Command Line Usage
 
-Thread control is consistent across `getclass`, `listclass`, `findrefs`, and `export`:
+Thread control is consistent across `getclass`, `listclass`, `listmethod`, `liststring`, `findrefs`, and `export`:
 
 - Use only `--thread <N>`.
 - Put `--thread` immediately after the subcommand.
@@ -80,6 +80,13 @@ rust_ASC findrefs --thread 10 app.apk type com.example.Main
 rust_ASC findrefs --thread 10 app.apk method onCreate --class com.example.Main
 rust_ASC findrefs --thread 10 app.apk field apiKey --class com.example.Main
 
+# Search subclasses or interface implementors.
+rust_ASC findrefs --thread 10 app.apk extends android.app.Activity
+rust_ASC findrefs --thread 10 app.apk impl android.os.IInterface
+
+# Treat --class as a fuzzy descriptor substring instead of an exact name.
+rust_ASC findrefs --thread 10 app.apk method notify --class poc --fuzzy-class
+
 # Decompile one class from an APK.
 rust_ASC getclass --thread 10 --debug app.apk com.example.Main
 rust_ASC getclass --thread 10 app.apk com.example.Main -o Main.java
@@ -88,6 +95,16 @@ rust_ASC getclass --thread 10 app.apk com.example.Main -o Main.java
 rust_ASC listclass --thread 10 app.apk
 rust_ASC listclass --thread 10 --prefix com.example app.apk
 
+# List method definitions without decompiling, optionally filtered by class/name.
+rust_ASC listmethod --thread 10 app.apk
+rust_ASC listmethod --class com.example.Main -f onCreate app.apk
+rust_ASC listmethod app.apk -o methods.txt
+
+# List string pool values, optionally filtered by substring.
+rust_ASC liststring --thread 10 app.apk
+rust_ASC liststring -f https app.apk
+rust_ASC liststring app.apk -o strings.txt
+
 # Decode AndroidManifest.xml.
 rust_ASC getmanifest app.apk -o AndroidManifest.xml
 
@@ -95,11 +112,23 @@ rust_ASC getmanifest app.apk -o AndroidManifest.xml
 rust_ASC export --thread 10 --debug app.apk output
 ```
 
-`export` writes one `.java` pseudocode file per class under package-relative paths in the output directory. Its multi-threaded APK export pipeline is supplied by [MG1937/radguard](https://github.com/MG1937/radguard). With `--debug`, it reports the APK export lifecycle and worker activity.
+`findrefs` takes `string`, `type`, `extends`, `impl`, `method`, or `field`. `extends` and `impl` print matching class descriptors; the rest print referencing methods. For `method` and `field`, `--class` is an exact dotted name or Dalvik descriptor, and `--fuzzy-class` makes it a case sensitive substring. `-o` also writes the output to a file.
+
+`listmethod` prints one Dalvik method descriptor per line, for example `Lcom/example/Main;->onCreate(Landroid/os/Bundle;)V`. It lists only methods defined in class data, in DEX/class/declaration order with duplicates preserved. `--class` takes an exact dotted name or descriptor; `-f` is a case insensitive name substring. `-o` writes to a file instead of stdout.
+
+`liststring` prints one string pool value per line, straight from the DEX string table, including literals nothing references. Order is DEX central-directory then string index; duplicates across DEX files are preserved. `-f` is a case insensitive substring filter, while `findrefs string` is case sensitive. `-o` writes to a file instead of stdout. Values containing newlines span multiple lines.
+
+`export` writes one `.java` pseudocode file per class under package-relative paths in the output directory, using the parallel APK pipeline from [MG1937/radguard](https://github.com/MG1937/radguard). `--debug` logs the export lifecycle.
 
 ## MCP
 
-`rust_ASC mcp` runs a stdio MCP server that exposes the CLI commands as tools: `getclass`, `listclass`, `getmanifest`, and `findrefs`. Each call spawns a fresh CLI process, so behavior always matches the command line.
+`rust_ASC mcp` runs a stdio MCP server that exposes the CLI commands as tools: `getclass`, `listclass`, `listmethod`, `liststring`, `getmanifest`, and `findrefs`. Each call spawns a fresh CLI process, so behavior always matches the command line.
+
+The `listmethod` tool accepts `apk_path`, optional `class_name`, `filter`, `thread`, and `output`. It returns exactly the CLI stdout; with `output`, it writes the method list to that file and returns empty text.
+
+The `liststring` tool accepts `apk_path`, optional `filter`, `thread`, and `output`, with the same stdout and `output` semantics.
+
+The `findrefs` tool accepts `apk_path`, `query`, optional `thread`, and optional `output`. `query.kind` is one of `string`, `type`, `method`, or `field`; `method` and `field` take optional `name`, `class_name`, and `fuzzy_class`. `extends` and `impl` are CLI only.
 
 Configure it in your MCP client:
 

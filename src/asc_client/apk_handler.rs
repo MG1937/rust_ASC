@@ -2,8 +2,8 @@
 // Strict 1:1 translation from Python apk_handler.py
 
 use std::fs::File;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Instant;
 
@@ -11,19 +11,55 @@ use cesu8::to_java_cesu8;
 use memmap2::{Mmap, MmapOptions};
 
 use crate::asc_client::apk::dex_reader::{
-    _dex_defines_class as _defines_class, list_dex_classes as _list_classes,
+    _dex_defines_class as _defines_class, class_defines_prefix_len, class_names_prefix_len,
+    list_dex_classes, list_dex_strings, write_dex_class_names as _write_classes,
+    write_dex_strings as _write_strings,
 };
 use crate::asc_client::apk::loader::{
-    _inflate_dex as _load_dex, _parse_cd_dex_entries as _parse_entries, DexEntry,
+    _inflate_dex as _load_dex, _inflate_dex_into, _inflate_dex_into_with,
+    _inflate_dex_prefix_into, _parse_cd_dex_entries as _parse_entries, DexEntry,
 };
-use crate::asc_client::dex_container::iter_logical_dex_buffers;
+use crate::asc_client::dex_container::{
+    dex041_logical_offsets, into_logical_dex_buffers, iter_logical_dex_buffers,
+};
 use crate::asc_core::findrefs::findrefs_manager::FindRefInput;
+use crate::asc_core::findrefs::scan::method_id_scan::render_dex_methods;
+
+type DexChunkResult = Result<(Vec<Vec<u8>>, usize), String>;
+
+/// Shared state for the ordered streaming pipeline.
+struct StreamState {
+    slots: Vec<Option<DexChunkResult>>,
+    /// Next entry index the consumer still has to emit. Producers may not run
+    /// further than `window` ahead of it, which bounds retained buffers.
+    next_emit: usize,
+    live: usize,
+    stop: bool,
+}
+
+/// Decrements the live-worker count even if a worker unwinds, so the consumer
+/// never blocks forever on a dead producer.
+struct LiveGuard<'a> {
+    state: &'a Mutex<StreamState>,
+    ready: &'a Condvar,
+}
+
+impl Drop for LiveGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.state.lock() {
+            guard.live -= 1;
+        }
+        self.ready.notify_all();
+    }
+}
 
 fn _inflate_and_hit(
     mm: &[u8],
     entry: &DexEntry,
     target_bytes: &[u8],
     stop_event: Option<&AtomicBool>,
+    scratch: &mut Vec<u8>,
+    decompressor: &mut libdeflater::Decompressor,
     log: &dyn Fn(&str),
 ) -> (bool, Option<String>, Option<Vec<u8>>) {
     let tid = format!("{:?}", thread::current().id());
@@ -40,10 +76,23 @@ fn _inflate_and_hit(
     }
 
     let t0 = Instant::now();
-    let data = match _load_dex(mm, entry, stop_event) {
-        Ok(Some(data)) => data,
-        Ok(None) | Err(_) => return (false, None, None),
-    };
+    // Membership only needs the DEX id tables plus one descriptor string, so
+    // most rejected entries decompress a small prefix instead of the whole file.
+    let prefix_need = |data: &[u8]| class_defines_prefix_len(data, target_bytes);
+    if _inflate_dex_prefix_into(mm, entry, scratch, decompressor, prefix_need).is_err() {
+        return (false, None, None);
+    }
+    if stop_event.is_some_and(|stop_event| stop_event.load(Ordering::SeqCst)) {
+        return (false, None, None);
+    }
+    if !matches!(iter_logical_dex_buffers(name, scratch).first(), Some((_, dex_buf)) if _defines_class(dex_buf, target_bytes).unwrap_or(false))
+    {
+        return (false, None, None);
+    }
+    // Confirmed: inflate this entry in full, then locate the class inside it.
+    if _inflate_dex_into_with(mm, entry, scratch, decompressor).is_err() {
+        return (false, None, None);
+    }
     let t1 = Instant::now();
     if stop_event.is_some_and(|stop_event| stop_event.load(Ordering::SeqCst)) {
         return (false, None, None);
@@ -52,7 +101,7 @@ fn _inflate_and_hit(
     let mut hit = false;
     let mut hit_name = None;
     let mut hit_data = None;
-    for (dex_name, dex_buf) in iter_logical_dex_buffers(name, &data) {
+    for (dex_name, dex_buf) in into_logical_dex_buffers(name, std::mem::take(scratch)) {
         if stop_event.is_some_and(|stop_event| stop_event.load(Ordering::SeqCst)) {
             return (false, None, None);
         }
@@ -139,8 +188,17 @@ impl ApkHandler {
         let (hit_name, hit_data) = if entries.len() == 1 && self.max_workers > 0 {
             // A thread pool cannot parallelize one item. Skipping it also lets
             // Deflate use the faster non-cancellable one-shot path.
-            let (ok, hit_name, hit_data) =
-                _inflate_and_hit(&mm, &entries[0], &target_bytes, None, &|msg| self._log(msg));
+            let mut scratch = Vec::new();
+            let mut decompressor = libdeflater::Decompressor::new();
+            let (ok, hit_name, hit_data) = _inflate_and_hit(
+                &mm,
+                &entries[0],
+                &target_bytes,
+                None,
+                &mut scratch,
+                &mut decompressor,
+                &|msg| self._log(msg),
+            );
             if ok {
                 (hit_name, hit_data)
             } else {
@@ -166,7 +224,11 @@ impl ApkHandler {
                 let stop_event = Arc::clone(&stop_event);
                 let target_bytes = target_bytes.clone();
                 let debug = self.debug;
-                handles.push(thread::spawn(move || loop {
+                handles.push(thread::spawn(move || {
+                    // Reused across entries so decoded pages stay warm.
+                    let mut scratch = Vec::new();
+                    let mut decompressor = libdeflater::Decompressor::new();
+                    loop {
                     if stop_event.load(Ordering::SeqCst) {
                         return;
                     }
@@ -184,6 +246,8 @@ impl ApkHandler {
                         &entries[index],
                         &target_bytes,
                         Some(&stop_event),
+                        &mut scratch,
+                        &mut decompressor,
                         &|msg| {
                             if debug {
                                 println!("{msg}");
@@ -198,6 +262,7 @@ impl ApkHandler {
                             }
                         }
                         return;
+                    }
                     }
                 }));
             }
@@ -220,6 +285,8 @@ impl ApkHandler {
         hit_name.zip(hit_data)
     }
 
+    /// List class descriptors as individual strings, preserving the row API.
+    /// CLI consumers can use `for_each_class_chunk` to avoid collecting rows.
     pub fn list_classes(&self, prefix: Option<&str>) -> Result<Vec<String>, String> {
         if self.max_workers == 0 {
             return Err("Worker count must be greater than zero".to_owned());
@@ -241,70 +308,371 @@ impl ApkHandler {
             .as_deref()
             .filter(|prefix| prefix.is_ascii())
             .map(str::as_bytes);
+        let mut rows = Vec::new();
+        self._stream_dex_items(
+            "class",
+            |buf| {
+                // Keep record boundaries instead of splitting serialized CLI
+                // lines; the historical API does not validate descriptor syntax.
+                let names = list_dex_classes(buf, prefix.as_deref(), prefix_bytes)?;
+                let count = names.len();
+                Ok((names.into_iter().map(String::into_bytes).collect(), count))
+            },
+            Some(&class_names_prefix_len),
+            |bytes| {
+                let name = String::from_utf8(bytes)
+                    .map_err(|error| format!("invalid UTF-8 class name: {error}"))?;
+                rows.push(name);
+                Ok(())
+            },
+        )?;
+        Ok(rows)
+    }
+
+    /// List defined method signatures in DEX declaration order.
+    pub fn list_methods(
+        &self,
+        class: Option<&str>,
+        filter: Option<&str>,
+    ) -> Result<Vec<String>, String> {
+        Ok(self
+            .list_method_chunks(class, filter)?
+            .iter()
+            .flat_map(|text| text.lines().map(str::to_owned))
+            .collect())
+    }
+
+    pub(crate) fn list_method_chunks(
+        &self,
+        class: Option<&str>,
+        filter: Option<&str>,
+    ) -> Result<Vec<String>, String> {
+        self.list_method_bytes(class, filter).map(|chunks| {
+            chunks
+                .into_iter()
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .collect()
+        })
+    }
+
+    pub(crate) fn list_method_bytes(
+        &self,
+        class: Option<&str>,
+        filter: Option<&str>,
+    ) -> Result<Vec<Vec<u8>>, String> {
+        let class = class
+            .map(str::trim)
+            .map(|name| {
+                if name.is_empty() {
+                    return Err("Class name cannot be empty".to_owned());
+                }
+                Ok(if name.starts_with('L') && name.ends_with(';') {
+                    name.to_owned()
+                } else {
+                    format!("L{};", name.replace('.', "/"))
+                })
+            })
+            .transpose()?;
+        let filter = filter.map(str::to_lowercase);
+        self._list_dex_items("method", |buf| {
+            let (text, count) = render_dex_methods(buf, class.as_deref(), filter.as_deref())?;
+            Ok((vec![text.into_bytes()], count))
+        })
+    }
+
+    /// Streams per-DEX output in central-directory order through `emit`.
+    ///
+    /// Entries are inflated and rendered in parallel, but only one window of
+    /// rendered buffers is retained at a time: a full list of every method in a
+    /// 400 MB APK is hundreds of MB of text, and holding it all until the end
+    /// dominated peak memory. Output order is unchanged (entry order), so the
+    /// emitted bytes are identical.
+    fn _stream_dex_items<F, E>(
+        &self,
+        kind: &str,
+        list: F,
+        need: Option<&(dyn Fn(&[u8]) -> Result<usize, String> + Sync)>,
+        mut emit: E,
+    ) -> Result<usize, String>
+    where
+        F: Fn(&[u8]) -> Result<(Vec<Vec<u8>>, usize), String> + Sync,
+        E: FnMut(Vec<u8>) -> Result<(), String>,
+    {
+        if self.max_workers == 0 {
+            return Err("Worker count must be greater than zero".to_owned());
+        }
 
         let t_start = Instant::now();
         let mm = self._open_apk()?;
         let entries = _parse_entries(&mm);
         if entries.is_empty() {
-            return Ok(Vec::new());
+            return Ok(0);
         }
 
         let workers = entries.len().min(self.max_workers);
-        let entries = Arc::new(entries);
-        let work_queue = Arc::new(Mutex::new(0usize));
-        let results = Arc::new(Mutex::new(vec![None; entries.len()]));
-        thread::scope(|scope| {
+        let mut total_count;
+
+        // Bounded reorder pipeline: workers inflate and render out of order,
+        // the consumer emits in central-directory order and the producer side
+        // stalls once `window` rendered buffers are waiting. No barriers, so
+        // parallelism is preserved while retained text stays bounded.
+        let window = workers.max(1);
+        let state = Mutex::new(StreamState {
+            slots: vec![None; entries.len()],
+            next_emit: 0,
+            live: workers,
+            stop: false,
+        });
+        let ready = Condvar::new();
+        let next = AtomicUsize::new(0);
+
+        total_count = thread::scope(|scope| -> Result<usize, String> {
             for _ in 0..workers {
-                let entries = Arc::clone(&entries);
-                let work_queue = Arc::clone(&work_queue);
-                let results = Arc::clone(&results);
-                let prefix = prefix.as_deref();
-                let prefix_bytes = prefix_bytes;
-                let mm = &mm;
-                scope.spawn(move || loop {
-                    let index = {
-                        let mut next = work_queue.lock().unwrap();
-                        if *next >= entries.len() {
+                scope.spawn(|| {
+                    let _live = LiveGuard { state: &state, ready: &ready };
+                    // Reused across entries: keeps the decompressed pages warm.
+                    let mut inflate_buf = Vec::new();
+                    let mut decompressor = libdeflater::Decompressor::new();
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(entry) = entries.get(index) else {
+                            break;
+                        };
+                        let mut inflate = |buf: &mut Vec<u8>| match need {
+                            Some(need) => {
+                                _inflate_dex_prefix_into(&mm, entry, buf, &mut decompressor, need)
+                            }
+                            None => {
+                                _inflate_dex_into_with(&mm, entry, buf, &mut decompressor)
+                            }
+                        };
+                        let result = inflate(&mut inflate_buf).and_then(|()| {
+                            let mut items = Vec::new();
+                            let mut count = 0;
+                            let mut offsets = dex041_logical_offsets(&inflate_buf);
+                            if offsets.len() <= 1 {
+                                let (dex_items, dex_count) = list(&inflate_buf)?;
+                                items.extend(dex_items);
+                                count += dex_count;
+                            } else {
+                                // DEX 041 containers need every logical DEX in
+                                // full; the prefix path cannot be used for them.
+                                offsets.clear();
+                                _inflate_dex_into_with(
+                                    &mm,
+                                    entry,
+                                    &mut inflate_buf,
+                                    &mut decompressor,
+                                )?;
+                                for (_, dex_buf) in
+                                    iter_logical_dex_buffers(&entry.name, &inflate_buf)
+                                {
+                                    let (dex_items, dex_count) = list(&dex_buf)?;
+                                    items.extend(dex_items);
+                                    count += dex_count;
+                                }
+                            }
+                            Ok((items, count))
+                        });
+                        let mut guard = state.lock().unwrap();
+                        // The consumer is waiting for the lowest unfinished
+                        // index and never blocks producers at that index, so
+                        // this wait can always be released.
+                        while index >= guard.next_emit + window && !guard.stop {
+                            guard = ready.wait(guard).unwrap();
+                        }
+                        if guard.stop {
                             return;
                         }
-                        let index = *next;
-                        *next += 1;
-                        index
-                    };
-                    let entry = &entries[index];
-                    let result = _load_dex(mm, entry, None).and_then(|data| {
-                        let data = data.ok_or_else(|| "inflate stopped".to_owned())?;
-                        let mut names = Vec::new();
-                        for (_dex_name, dex_buf) in iter_logical_dex_buffers(&entry.name, &data) {
-                            names.extend(_list_classes(&dex_buf, prefix, prefix_bytes)?);
-                        }
-                        Ok((entry.name.clone(), names))
-                    });
-                    results.lock().unwrap()[index] = Some(result);
+                        guard.slots[index] = Some(result);
+                        drop(guard);
+                        ready.notify_all();
+                    }
                 });
             }
-        });
 
-        let mut names = Vec::new();
-        let mut results = results.lock().unwrap();
-        for result in results.iter_mut() {
-            let (dex_name, dex_names) = result
-                .take()
-                .ok_or_else(|| "listclass worker did not return a result".to_owned())??;
-            names.extend(dex_names.iter().cloned());
-            self._log(&format!(
-                "[APK] '{dex_name}' class_count={}",
-                dex_names.len()
-            ));
-        }
+            let mut emitted = 0usize;
+            for index in 0..entries.len() {
+                let result = {
+                    let mut guard = state.lock().unwrap();
+                    while guard.slots[index].is_none() {
+                        if guard.live == 0 {
+                            break;
+                        }
+                        guard = ready.wait(guard).unwrap();
+                    }
+                    match guard.slots[index].take() {
+                        Some(result) => {
+                            guard.next_emit = index + 1;
+                            ready.notify_all();
+                            result
+                        }
+                        None => Err(format!(
+                            "list{kind} worker did not return a result for '{}'",
+                            entries[index].name
+                        )),
+                    }
+                };
+                let (dex_items, count) = match result {
+                    Ok(value) => value,
+                    Err(error) => {
+                        // Release blocked producers before unwinding.
+                        state.lock().unwrap().stop = true;
+                        ready.notify_all();
+                        return Err(error);
+                    }
+                };
+                if self.debug {
+                    self._log(&format!(
+                        "[APK] '{}' {kind}_count={count}",
+                        entries[index].name
+                    ));
+                }
+                for item in dex_items {
+                    if let Err(error) = emit(item) {
+                        state.lock().unwrap().stop = true;
+                        ready.notify_all();
+                        return Err(error);
+                    }
+                }
+                emitted += count;
+            }
+            Ok(emitted)
+        })?;
+
         if self.debug {
             self._log(&format!(
-                "[APK] listclass total={:.2} us count={} workers={workers}",
+                "[APK] list{kind} total={:.2} us count={total_count} workers={workers}",
                 t_start.elapsed().as_secs_f64() * 1_000_000.0,
-                names.len(),
             ));
         }
-        Ok(names)
+        Ok(total_count)
+    }
+
+    fn _list_dex_items<F>(&self, kind: &str, list: F) -> Result<Vec<Vec<u8>>, String>
+    where
+        F: Fn(&[u8]) -> Result<(Vec<Vec<u8>>, usize), String> + Sync,
+    {
+        let mut items = Vec::new();
+        self._stream_dex_items(kind, list, None, |chunk| {
+            items.push(chunk);
+            Ok(())
+        })?;
+        Ok(items)
+    }
+
+    /// Stream class names (one per line) in DEX declaration order.
+    pub fn for_each_class_chunk<E>(&self, prefix: Option<&str>, mut emit: E) -> Result<usize, String>
+    where
+        E: FnMut(&[u8]) -> Result<(), String>,
+    {
+        let prefix = prefix
+            .map(str::trim)
+            .map(|prefix| {
+                if prefix.is_empty() {
+                    return Err("Class prefix cannot be empty".to_owned());
+                }
+                Ok(if prefix.starts_with('L') {
+                    prefix.to_owned()
+                } else {
+                    format!("L{}", prefix.replace('.', "/"))
+                })
+            })
+            .transpose()?;
+        let prefix_bytes = prefix
+            .as_deref()
+            .filter(|prefix| prefix.is_ascii())
+            .map(str::as_bytes);
+
+        self._stream_dex_items(
+            "class",
+            |buf| {
+                let mut names = Vec::new();
+                let count = _write_classes(buf, prefix.as_deref(), prefix_bytes, &mut names)?;
+                Ok((vec![names], count))
+            },
+            Some(&class_names_prefix_len),
+            |chunk| emit(&chunk),
+        )
+    }
+
+    /// Stream rendered method lines in DEX declaration order.
+    pub fn for_each_method_chunk<E>(
+        &self,
+        class: Option<&str>,
+        filter: Option<&str>,
+        mut emit: E,
+    ) -> Result<usize, String>
+    where
+        E: FnMut(&[u8]) -> Result<(), String>,
+    {
+        let class = class
+            .map(str::trim)
+            .map(|name| {
+                if name.is_empty() {
+                    return Err("Class name cannot be empty".to_owned());
+                }
+                Ok(if name.starts_with('L') && name.ends_with(';') {
+                    name.to_owned()
+                } else {
+                    format!("L{};", name.replace('.', "/"))
+                })
+            })
+            .transpose()?;
+        let filter = filter.map(str::to_lowercase);
+        self._stream_dex_items(
+            "method",
+            |buf| {
+                let (text, count) = render_dex_methods(buf, class.as_deref(), filter.as_deref())?;
+                Ok((vec![text.into_bytes()], count))
+            },
+            None,
+            |chunk| emit(&chunk),
+        )
+    }
+
+    /// List string pool values as individual records, preserving the row API.
+    /// CLI consumers can use `for_each_string_chunk` to avoid collecting rows.
+    pub fn list_strings(&self, filter: Option<&str>) -> Result<Vec<String>, String> {
+        let filter = filter.map(str::to_lowercase);
+        let mut rows = Vec::new();
+        self._stream_dex_items(
+            "string",
+            |buf| {
+                // One record per value: a pool can hold strings with newlines,
+                // and the row API must not reframe them as CLI lines.
+                let values = list_dex_strings(buf, filter.as_deref())?;
+                let count = values.len();
+                Ok((values.into_iter().map(String::into_bytes).collect(), count))
+            },
+            // Every string is potentially needed, so entries inflate in full.
+            None,
+            |bytes| {
+                let value = String::from_utf8(bytes)
+                    .map_err(|error| format!("invalid UTF-8 string value: {error}"))?;
+                rows.push(value);
+                Ok(())
+            },
+        )?;
+        Ok(rows)
+    }
+
+    /// Stream string values (one per line) in DEX table order.
+    pub fn for_each_string_chunk<E>(&self, filter: Option<&str>, mut emit: E) -> Result<usize, String>
+    where
+        E: FnMut(&[u8]) -> Result<(), String>,
+    {
+        let filter = filter.map(str::to_lowercase);
+        self._stream_dex_items(
+            "string",
+            |buf| {
+                let mut out = Vec::new();
+                let count = _write_strings(buf, filter.as_deref(), &mut out)?;
+                Ok((vec![out], count))
+            },
+            None,
+            |chunk| emit(&chunk),
+        )
     }
 
     pub fn for_each_findrefs(
@@ -339,6 +707,9 @@ impl ApkHandler {
             let find = Arc::clone(&find);
             handles.push(thread::spawn(move || {
                 let mut results = Vec::new();
+                // One warm decompression buffer per worker, reused per entry.
+                let mut inflate_buf = Vec::new();
+                let mut decompressor = libdeflater::Decompressor::new();
                 loop {
                     let index = {
                         let mut next = work_queue.lock().unwrap();
@@ -349,13 +720,17 @@ impl ApkHandler {
                         *next += 1;
                         index
                     };
-                    if let Ok(result) = crate::asc_client::apk::worker::_findrefs_worker_from_buf(
-                        &apk_buf,
-                        &entries[index],
-                        &find_type,
-                        &find,
-                        true,
-                    ) {
+                    if let Ok(result) =
+                        crate::asc_client::apk::worker::_findrefs_worker_from_buf_into(
+                            &apk_buf,
+                            &entries[index],
+                            &find_type,
+                            &find,
+                            true,
+                            &mut inflate_buf,
+                            &mut decompressor,
+                        )
+                    {
                         results.push(result);
                     }
                 }
@@ -364,6 +739,8 @@ impl ApkHandler {
         }
 
         let mut final_results = Vec::new();
+        let mut inflate_buf = Vec::new();
+        let mut decompressor = libdeflater::Decompressor::new();
         loop {
             let index = {
                 let mut next = work_queue.lock().unwrap();
@@ -374,13 +751,17 @@ impl ApkHandler {
                 *next += 1;
                 index
             };
-            if let Ok(result) = crate::asc_client::apk::worker::_findrefs_worker_from_buf(
-                &apk_buf,
-                &entries[index],
-                find_type,
-                &find,
-                true,
-            ) {
+            if let Ok(result) =
+                crate::asc_client::apk::worker::_findrefs_worker_from_buf_into(
+                    &apk_buf,
+                    &entries[index],
+                    find_type,
+                    &find,
+                    true,
+                    &mut inflate_buf,
+                    &mut decompressor,
+                )
+            {
                 final_results.push(result);
             }
         }

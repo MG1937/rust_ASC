@@ -40,7 +40,7 @@ fn rebuild_keeps_static_values_and_field_operands_aligned() {
     let static_fields: Vec<_> = clazz
         .fields()
         .into_iter()
-        .map(|field_idx| dex.get_field(field_idx))
+        .map(|field_idx| dex.get_field(*field_idx))
         .filter(|field| field.is_static)
         .collect();
     let class_def_off = dex.header.classes.0 as usize + clazz.index as usize * 32;
@@ -82,9 +82,9 @@ fn rebuild_keeps_static_values_and_field_operands_aligned() {
     let method_idx = clazz
         .methods()
         .into_iter()
-        .find(|&method_idx| dex.get_method(method_idx).name() == "getSecond")
+        .find(|&&method_idx| dex.get_method(method_idx).name() == "getSecond")
         .unwrap();
-    let bytecode = dex.get_method(method_idx).bytecode();
+    let bytecode = dex.get_method(*method_idx).bytecode();
     let field_idx = u16::from_le_bytes([bytecode[2], bytecode[3]]) as u32;
     assert_eq!(dex.get_field(field_idx).name(), "SECOND");
 }

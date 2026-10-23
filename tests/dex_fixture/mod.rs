@@ -525,3 +525,147 @@ pub fn make_dex041_container() -> Vec<u8> {
     put_u32(&mut data, second_off + 0x70, total);
     data
 }
+
+/// Build a DEX with one class, one proto, and one code item per method, where
+/// `string_data_item`s are emitted in `physical_order` instead of string-index
+/// order. The two orders are independent in the DEX format; R8 output in the
+/// field report orders them differently, so any lookup that infers a string
+/// index from a physical offset has to be tested against that layout.
+///
+/// `types` holds type_ids rows (string indices), `class_def` holds the defining
+/// class/superclass type indices, `methods` holds
+/// `(class_idx, proto_idx, name_idx)`, and `bodies` holds
+/// `(registers_size, ins_size, outs_size, insns)` per method.
+pub fn make_permuted_string_dex(
+    strings: &[&[u8]],
+    physical_order: &[usize],
+    types: &[u32],
+    class_def: (u32, u32),
+    methods: &[(u16, u16, u32)],
+    bodies: &[(u16, u16, u16, Vec<u8>)],
+) -> Vec<u8> {
+    assert_eq!(methods.len(), bodies.len());
+    assert_eq!(physical_order.len(), strings.len());
+
+    let mut buf = vec![0; 112];
+    let mut sections = vec![(0, 1, 0)];
+    let string_ids = section(&mut buf, &mut sections, 1, strings.len(), &vec![0; 4 * strings.len()], 4);
+    let mut type_data = Vec::new();
+    for &value in types {
+        append_u32(&mut type_data, value);
+    }
+    let type_ids = section(&mut buf, &mut sections, 2, types.len(), &type_data, 4);
+    let void_string = strings.iter().position(|value| *value == b"V");
+    let return_idx = void_string
+        .and_then(|index| types.iter().position(|&row| row as usize == index))
+        .map(|index| index as u32)
+        .unwrap_or(types[0]);
+    let mut proto_data = Vec::new();
+    for value in [return_idx, return_idx, 0] {
+        append_u32(&mut proto_data, value);
+    }
+    let proto_ids = section(&mut buf, &mut sections, 3, 1, &proto_data, 4);
+    let mut method_data = Vec::new();
+    for &(class_idx, proto_idx, name_idx) in methods {
+        append_u16(&mut method_data, class_idx);
+        append_u16(&mut method_data, proto_idx);
+        append_u32(&mut method_data, name_idx);
+    }
+    let method_ids = section(&mut buf, &mut sections, 5, methods.len(), &method_data, 4);
+    let class_defs = section(&mut buf, &mut sections, 6, 1, &[0; 32], 4);
+    let data_off = buf.len();
+
+    let mut relative = vec![0usize; strings.len()];
+    let mut payload = Vec::new();
+    for &index in physical_order {
+        relative[index] = payload.len();
+        payload.extend(uleb(strings[index].len()));
+        payload.extend_from_slice(strings[index]);
+        payload.push(0);
+    }
+    let strings_off = section(&mut buf, &mut sections, 0x2002, strings.len(), &payload, 1);
+    for index in 0..strings.len() {
+        put_u32(&mut buf, string_ids + index * 4, (strings_off + relative[index]) as u32);
+    }
+
+    let mut code_offs = Vec::new();
+    for (registers_size, ins_size, outs_size, insns) in bodies {
+        let code = code_item(*registers_size, *ins_size, *outs_size, (insns.len() / 2) as u32, insns);
+        code_offs.push(section(&mut buf, &mut sections, 0x2001, 1, &code, 4));
+    }
+
+    let mut class_data = Vec::new();
+    class_data.extend(uleb(0));
+    class_data.extend(uleb(0));
+    class_data.extend(uleb(methods.len()));
+    class_data.extend(uleb(0));
+    for (index, &code_off) in code_offs.iter().enumerate() {
+        // encoded_method.method_idx_diff is relative to the previous entry.
+        class_data.extend(uleb(if index == 0 { 0 } else { 1 }));
+        class_data.extend(uleb(9));
+        class_data.extend(uleb(code_off));
+    }
+    let class_data = section(&mut buf, &mut sections, 0x2000, 1, &class_data, 1);
+
+    for (index, value) in [
+        class_def.0,
+        1,
+        class_def.1,
+        0,
+        u32::MAX,
+        0,
+        class_data as u32,
+        0,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        put_u32(&mut buf, class_defs + index * 4, value);
+    }
+    finish_dex(
+        buf,
+        &mut sections,
+        data_off,
+        [
+            (strings.len() as u32, string_ids as u32),
+            (types.len() as u32, type_ids as u32),
+            (1, proto_ids as u32),
+            (0, 0),
+            (methods.len() as u32, method_ids as u32),
+            (1, class_defs as u32),
+        ],
+    )
+}
+
+/// A DEX whose string pool holds arbitrary values and defines no classes.
+///
+/// `liststring` walks the string table rather than `class_defs`, so its fixture
+/// needs values that are not class descriptors: resource URLs, SQL, UTF-8 text.
+pub fn make_strings_dex(values: &[&str]) -> Vec<u8> {
+    let header_size = 0x70;
+    let mut buf = vec![0; header_size];
+    let string_ids = buf.len();
+    buf.resize(buf.len() + 4 * values.len(), 0);
+    let data_off = buf.len();
+
+    for (index, value) in values.iter().enumerate() {
+        let string_off = buf.len();
+        put_u32(&mut buf, string_ids + index * 4, string_off as u32);
+        // The leading uleb128 stores UTF-16 code units, not byte length.
+        buf.extend_from_slice(&uleb(value.encode_utf16().count()));
+        buf.extend_from_slice(value.as_bytes());
+        buf.push(0);
+    }
+
+    let file_size = buf.len();
+    buf[..4].copy_from_slice(b"dex\n");
+    buf[4..7].copy_from_slice(b"035");
+    put_u32(&mut buf, 0x20, file_size as u32);
+    put_u32(&mut buf, 0x24, header_size as u32);
+    // Only the string section is populated; the other id tables stay zero.
+    put_u32(&mut buf, 0x38, values.len() as u32);
+    put_u32(&mut buf, 0x3c, string_ids as u32);
+    put_u32(&mut buf, 0x68, (file_size - data_off) as u32);
+    put_u32(&mut buf, 0x6c, data_off as u32);
+    buf
+}

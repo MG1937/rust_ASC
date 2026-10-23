@@ -152,7 +152,7 @@ fn cli_stdout(args: impl IntoIterator<Item = OsString>) -> String {
 }
 
 #[test]
-fn exposes_four_documented_cli_wrappers() {
+fn exposes_six_documented_cli_wrappers() {
     let mut client = Client::new();
     client.send(json!({"jsonrpc":"2.0", "id":99, "method":"tools/list"}));
     let response = client.recv();
@@ -162,7 +162,17 @@ fn exposes_four_documented_cli_wrappers() {
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
     names.sort();
-    assert_eq!(names, ["findrefs", "getclass", "getmanifest", "listclass"]);
+    assert_eq!(
+        names,
+        [
+            "findrefs",
+            "getclass",
+            "getmanifest",
+            "listclass",
+            "listmethod",
+            "liststring"
+        ]
+    );
     for tool in tools {
         assert_eq!(tool["inputSchema"]["type"], "object");
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
@@ -185,7 +195,7 @@ fn exposes_four_documented_cli_wrappers() {
         let output = tool["inputSchema"]["properties"]["output"]["description"]
             .as_str()
             .unwrap();
-        if tool["name"] == "listclass" {
+        if ["listclass", "listmethod", "liststring"].contains(&tool["name"].as_str().unwrap()) {
             assert!(output.contains("stdout is empty."));
         } else {
             assert!(output.contains("Content is also returned."));
@@ -274,6 +284,45 @@ fn tool_results_are_exact_cli_stdout() {
     );
 
     let result = client.call(
+        "liststring",
+        json!({"apk_path":path, "filter":"first", "thread":1}),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(
+        text(&result),
+        cli_stdout(["liststring", "--thread", "1", "--filter", "first", "--", &path].map(OsString::from))
+    );
+
+    let result = client.call(
+        "listmethod",
+        json!({"apk_path":path, "class_name":"example.Test", "filter":"ECON", "thread":1}),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(text(&result), "Lexample/Test;->second()V\n");
+    assert_eq!(
+        text(&result),
+        cli_stdout(
+            [
+                "listmethod",
+                "--thread",
+                "1",
+                "--class",
+                "example.Test",
+                "--filter",
+                "ECON",
+                &path
+            ]
+            .map(OsString::from)
+        )
+    );
+    let result = client.call(
+        "listmethod",
+        json!({"apk_path":path, "filter":"--not-a-flag"}),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(text(&result), "");
+
+    let result = client.call(
         "getclass",
         json!({"apk_path":path, "class_name":"example.Test", "thread":1}),
     );
@@ -348,6 +397,18 @@ fn optional_output_writes_files_with_cli_semantics() {
         "Lexample/Test;\n"
     );
     assert_eq!(text(&result), "");
+
+    let methods_output = dir.path().join("methods.txt");
+    let result = client.call(
+        "listmethod",
+        json!({"apk_path":path, "class_name":"example.Test", "filter":"first", "thread":1, "output":methods_output}),
+    );
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(text(&result), "");
+    assert_eq!(
+        std::fs::read_to_string(&methods_output).unwrap(),
+        "Lexample/Test;->first()V\n"
+    );
 
     let manifest_output = dir.path().join("AndroidManifest.xml");
     let result = client.call(
@@ -463,6 +524,21 @@ fn cli_failures_are_isolated_and_the_server_remains_usable() {
     assert_eq!(result["isError"], true);
     assert_eq!(text(&result), String::from_utf8_lossy(&cli.stderr).trim());
 
+    for args in [
+        json!({"apk_path":path, "thread":0}),
+        json!({"apk_path":path, "class_name":" "}),
+        json!({"apk_path":path, "filter":true}),
+        json!({"apk_path":path, "unexpected":1}),
+    ] {
+        let result = client.call("listmethod", args);
+        assert_eq!(result["isError"], true, "{result}");
+    }
+    let result = client.call("listmethod", json!({"apk_path":path}));
+    assert_eq!(result["isError"], false);
+    assert_eq!(
+        text(&result),
+        "Lexample/Test;->first()V\nLexample/Test;->second()V\n"
+    );
     let result = client.call("listclass", json!({"apk_path":path}));
     assert_eq!(result["isError"], false);
     assert_eq!(text(&result), "Lexample/Test;\n");

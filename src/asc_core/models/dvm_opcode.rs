@@ -1,5 +1,8 @@
 // Auth: MG1937
 
+#![allow(non_upper_case_globals)]
+#![allow(non_camel_case_types)]
+
 use std::collections::HashMap;
 
 pub struct VerifyFlag;

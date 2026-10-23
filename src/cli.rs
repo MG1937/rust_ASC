@@ -65,12 +65,16 @@ fn _build_member_find(
             type_: None,
             method: Some(MethodFind::new(class, name.map(str::to_owned))),
             field: None,
+            extends: None,
+            impl_: None,
         }),
         "field" => Ok(FindRefInput {
             string: None,
             type_: None,
             method: None,
             field: Some(FieldFind::new(class, name.map(str::to_owned))),
+            extends: None,
+            impl_: None,
         }),
         _ => Err(format!("Unknown member type: {key}")),
     }
@@ -86,13 +90,28 @@ fn _get_find_query(args: &ArgMatches) -> Result<(String, FindRefInput), String> 
             type_: None,
             method: None,
             field: None,
+            extends: None,
+            impl_: None,
         },
         "type" => FindRefInput {
             string: None,
             type_: find_args.get_one::<String>("value").cloned(),
             method: None,
             field: None,
+            extends: None,
+            impl_: None,
         },
+        "extends" | "impl" => {
+            let target = _format_class_name(find_args.get_one::<String>("value").unwrap())?;
+            FindRefInput {
+                string: None,
+                type_: None,
+                method: None,
+                field: None,
+                extends: (find_type == "extends").then(|| target.clone()),
+                impl_: (find_type == "impl").then_some(target),
+            }
+        }
         "method" | "field" => _build_member_find(
             find_type,
             find_args
@@ -155,19 +174,86 @@ fn _handle_listclass(args: &ArgMatches) -> Result<(), String> {
     let debug = args.get_flag("debug");
     let thread = _get_worker_count(args)?;
     let prefix = args.get_one::<String>("prefix").map(String::as_str);
-    let names = ApkHandler::new(apk_path, debug, thread).list_classes(prefix)?;
-    let text = if names.is_empty() {
-        String::new()
-    } else {
-        names.join("\n") + "\n"
-    };
-
+    let handler = ApkHandler::new(apk_path, debug, thread);
     if let Some(output) = args.get_one::<String>("output") {
-        fs::write(output, text).map_err(|error| format!("cannot write {output}: {error}"))?;
+        let mut file = File::create(output)
+            .map_err(|error| format!("cannot write {output}: {error}"))?;
+        handler.for_each_class_chunk(prefix, |chunk| {
+            file.write_all(chunk)
+                .map_err(|error| format!("cannot write {output}: {error}"))
+        })?;
     } else {
-        print!("{text}");
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        handler.for_each_class_chunk(prefix, |chunk| {
+            out.write_all(chunk)
+                .map_err(|error| format!("cannot write stdout: {error}"))
+        })?;
     }
 
+    if debug {
+        println!(
+            "[DEBUG] Total Execution Time: {:.2} us",
+            t_start.elapsed().as_secs_f64() * 1_000_000.0
+        );
+    }
+    Ok(())
+}
+
+fn _handle_listmethod(args: &ArgMatches) -> Result<(), String> {
+    let t_start = Instant::now();
+    let apk_path = args.get_one::<String>("apk_path").unwrap();
+    let debug = args.get_flag("debug");
+    let thread = _get_worker_count(args)?;
+    let class = args.get_one::<String>("class_name").map(String::as_str);
+    let filter = args.get_one::<String>("filter").map(String::as_str);
+    let handler = ApkHandler::new(apk_path, debug, thread);
+    if let Some(output) = args.get_one::<String>("output") {
+        let mut file = File::create(output)
+            .map_err(|error| format!("cannot write {output}: {error}"))?;
+        handler.for_each_method_chunk(class, filter, |chunk| {
+            file.write_all(chunk)
+                .map_err(|error| format!("cannot write {output}: {error}"))
+        })?;
+    } else {
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        handler.for_each_method_chunk(class, filter, |chunk| {
+            out.write_all(chunk)
+                .map_err(|error| format!("cannot write stdout: {error}"))
+        })?;
+    }
+    if debug {
+        println!(
+            "[DEBUG] Total Execution Time: {:.2} us",
+            t_start.elapsed().as_secs_f64() * 1_000_000.0
+        );
+    }
+    Ok(())
+}
+
+fn _handle_liststring(args: &ArgMatches) -> Result<(), String> {
+    let t_start = Instant::now();
+    let apk_path = args.get_one::<String>("apk_path").unwrap();
+    let debug = args.get_flag("debug");
+    let thread = _get_worker_count(args)?;
+    let filter = args.get_one::<String>("filter").map(String::as_str);
+    let handler = ApkHandler::new(apk_path, debug, thread);
+    if let Some(output) = args.get_one::<String>("output") {
+        let mut file = File::create(output)
+            .map_err(|error| format!("cannot write {output}: {error}"))?;
+        handler.for_each_string_chunk(filter, |chunk| {
+            file.write_all(chunk)
+                .map_err(|error| format!("cannot write {output}: {error}"))
+        })?;
+    } else {
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        handler.for_each_string_chunk(filter, |chunk| {
+            out.write_all(chunk)
+                .map_err(|error| format!("cannot write stdout: {error}"))
+        })?;
+    }
     if debug {
         println!(
             "[DEBUG] Total Execution Time: {:.2} us",
@@ -347,6 +433,8 @@ pub fn _build_main_parser() -> Command {
             .after_help(
                 "examples:\n  rust_ASC findrefs app.apk string token -o string_refs.txt\n  \
                  rust_ASC findrefs app.apk type com.poc.Main\n  \
+                 rust_ASC findrefs app.apk extends android.app.Activity -o subclasses.txt\n  \
+                 rust_ASC findrefs app.apk impl android.os.IInterface -o impls.txt\n  \
                  rust_ASC findrefs app.apk method onCreate --class com.poc.Main\n  \
                  rust_ASC findrefs app.apk method notify --class poc --fuzzy-class -o method_refs.txt\n  \
                  rust_ASC findrefs app.apk field changeQuickRedirect -o field_refs.txt",
@@ -375,6 +463,36 @@ pub fn _build_main_parser() -> Command {
                     )
                     .arg(Arg::new("value").required(true).help("Fuzzy type pattern.")),
             )
+            .subcommand(
+                Command::new("extends")
+                    .about("Find classes that extend the target class.")
+                    .arg(
+                        Arg::new("output")
+                            .short('o')
+                            .long("output")
+                            .help("Also write subclass output to this file."),
+                    )
+                    .arg(
+                        Arg::new("value")
+                            .required(true)
+                            .help("Target class in dotted or Dalvik form."),
+                    ),
+            )
+            .subcommand(
+                Command::new("impl")
+                    .about("Find classes that implement the target interface.")
+                    .arg(
+                        Arg::new("output")
+                            .short('o')
+                            .long("output")
+                            .help("Also write implementor output to this file."),
+                    )
+                    .arg(
+                        Arg::new("value")
+                            .required(true)
+                            .help("Target interface in dotted or Dalvik form."),
+                    ),
+            )
             .subcommand(member_parser(
                 "method",
                 "method",
@@ -398,10 +516,13 @@ pub fn _build_main_parser() -> Command {
              rust_ASC getclass --thread 16 app.apk com.poc.Main\n  \
              rust_ASC listclass app.apk -o classes.txt\n  \
              rust_ASC listclass --prefix com.poc app.apk\n  \
+             rust_ASC liststring app.apk -f https -o strings.txt\n  \
              rust_ASC export --thread 16 app.apk output\n  \
              rust_ASC getmanifest app.apk -o AndroidManifest.xml\n  \
              rust_ASC findrefs app.apk string token -o string_refs.txt\n  \
              rust_ASC findrefs app.apk type com.poc.Main\n  \
+             rust_ASC findrefs app.apk extends android.app.Activity -o subclasses.txt\n  \
+             rust_ASC findrefs app.apk impl android.os.IInterface -o impls.txt\n  \
              rust_ASC findrefs app.apk method onCreate --class com.poc.Main\n  \
              rust_ASC findrefs app.apk method notify --class MainActivity --fuzzy-class -o method_refs.txt\n  \
              rust_ASC findrefs app.apk field apiKey -o field_refs.txt",
@@ -438,6 +559,45 @@ pub fn _build_main_parser() -> Command {
                         .help("Write class names to this file instead of stdout."),
                 )
                 .arg(Arg::new("apk_path").required(true).help("Path to the input APK file.")),
+        ))
+        .subcommand(common_args(
+            Command::new("listmethod")
+                .about("List method definitions across all DEX entries without decompilation.")
+                .arg(Arg::new("apk_path").required(true).help("Path to the input APK file."))
+                .arg(
+                    Arg::new("class_name")
+                        .long("class")
+                        .help("Only list methods defined by this class (dotted name or Dalvik descriptor)."),
+                )
+                .arg(
+                    Arg::new("filter")
+                        .short('f')
+                        .long("filter")
+                        .help("Case insensitive substring filter over method names."),
+                )
+                .arg(
+                    Arg::new("output")
+                        .short('o')
+                        .long("output")
+                        .help("Write method descriptors to this file instead of stdout."),
+                ),
+        ))
+        .subcommand(common_args(
+            Command::new("liststring")
+                .about("List string pool values across all DEX entries; use --filter to match a substring.")
+                .arg(Arg::new("apk_path").required(true).help("Path to the input APK file."))
+                .arg(
+                    Arg::new("filter")
+                        .short('f')
+                        .long("filter")
+                        .help("Case insensitive substring filter over string values."),
+                )
+                .arg(
+                    Arg::new("output")
+                        .short('o')
+                        .long("output")
+                        .help("Write string values to this file instead of stdout."),
+                ),
         ))
         .subcommand(common_args(
             Command::new("export")
@@ -485,6 +645,8 @@ where
         Some(("mcp", _)) => crate::mcp::run(),
         Some(("getclass", args)) => _handle_getclass(args),
         Some(("listclass", args)) => _handle_listclass(args),
+        Some(("listmethod", args)) => _handle_listmethod(args),
+        Some(("liststring", args)) => _handle_liststring(args),
         Some(("export", args)) => _handle_export(args),
         Some(("getmanifest", args)) => _handle_getmanifest(args),
         Some(("findrefs", args)) => _handle_findrefs(args),

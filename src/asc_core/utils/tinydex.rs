@@ -1,5 +1,7 @@
 use crate::asc_core::utils::leb128::read_uleb128_fast;
-use crate::asc_core::utils::structs::{_STRUCT_H, _STRUCT_HHI, _STRUCT_HHHHII, _STRUCT_I, _STRUCT_III};
+use crate::asc_core::utils::structs::{
+    _STRUCT_H, _STRUCT_HHHHII, _STRUCT_HHI, _STRUCT_I, _STRUCT_III,
+};
 use cesu8::from_java_cesu8;
 use memchr::memchr;
 use std::cell::{RefCell, RefMut};
@@ -39,12 +41,30 @@ pub struct DEXHeader {
 impl DEXHeader {
     pub fn new(buf: &[u8]) -> Self {
         DEXHeader {
-            strings: (_STRUCT_I::unpack_from(buf, 0x3C), _STRUCT_I::unpack_from(buf, 0x38)),
-            types: (_STRUCT_I::unpack_from(buf, 0x44), _STRUCT_I::unpack_from(buf, 0x40)),
-            prototypes: (_STRUCT_I::unpack_from(buf, 0x4C), _STRUCT_I::unpack_from(buf, 0x48)),
-            fields: (_STRUCT_I::unpack_from(buf, 0x54), _STRUCT_I::unpack_from(buf, 0x50)),
-            methods: (_STRUCT_I::unpack_from(buf, 0x5C), _STRUCT_I::unpack_from(buf, 0x58)),
-            classes: (_STRUCT_I::unpack_from(buf, 0x64), _STRUCT_I::unpack_from(buf, 0x60)),
+            strings: (
+                _STRUCT_I::unpack_from(buf, 0x3C),
+                _STRUCT_I::unpack_from(buf, 0x38),
+            ),
+            types: (
+                _STRUCT_I::unpack_from(buf, 0x44),
+                _STRUCT_I::unpack_from(buf, 0x40),
+            ),
+            prototypes: (
+                _STRUCT_I::unpack_from(buf, 0x4C),
+                _STRUCT_I::unpack_from(buf, 0x48),
+            ),
+            fields: (
+                _STRUCT_I::unpack_from(buf, 0x54),
+                _STRUCT_I::unpack_from(buf, 0x50),
+            ),
+            methods: (
+                _STRUCT_I::unpack_from(buf, 0x5C),
+                _STRUCT_I::unpack_from(buf, 0x58),
+            ),
+            classes: (
+                _STRUCT_I::unpack_from(buf, 0x64),
+                _STRUCT_I::unpack_from(buf, 0x60),
+            ),
             mapoff: _STRUCT_I::unpack_from(buf, 0x34),
         }
     }
@@ -364,8 +384,7 @@ impl DexMethod {
             return Vec::new();
         }
         let off = self._code_off as usize;
-        let (_, _, _, _, _, insns_size) =
-            _STRUCT_HHHHII::unpack_from(&self.context.buf, off);
+        let (_, _, _, _, _, insns_size) = _STRUCT_HHHHII::unpack_from(&self.context.buf, off);
         let off = off + 16;
         let insns_bytes = &self.context.buf[off..off + insns_size as usize * 2];
         insns_bytes.to_vec()
@@ -376,8 +395,11 @@ pub struct DexClass {
     pub class_idx: u32,
     pub index: u32,
     pub class_data_off: u32,
-    _methods: Vec<usize>,
-    _fields: Vec<usize>,
+    pub class_def_off: u32,
+    _methods: Vec<u32>,
+    _fields: Vec<u32>,
+    _superclass_idx: Option<u32>,
+    _interface_type_idxs: Option<Vec<u16>>,
     _parsed: bool,
     context: Rc<DexContext>,
 }
@@ -398,8 +420,11 @@ impl DexClass {
             class_idx,
             index: class_index,
             class_data_off,
+            class_def_off,
             _methods: Vec::new(),
             _fields: Vec::new(),
+            _superclass_idx: None,
+            _interface_type_idxs: None,
             _parsed: false,
             context: Rc::clone(context),
         }
@@ -439,7 +464,7 @@ impl DexClass {
             let mut field = DexContext::get_field_mut(&self.context, field_idx);
             field.access_flags = access_flags as u32;
             field.is_static = true;
-            self._fields.push(field_idx as usize);
+            self._fields.push(field_idx);
         }
 
         field_idx = 0;
@@ -452,7 +477,7 @@ impl DexClass {
             let mut field = DexContext::get_field_mut(&self.context, field_idx);
             field.access_flags = access_flags as u32;
             field.is_static = false;
-            self._fields.push(field_idx as usize);
+            self._fields.push(field_idx);
         }
 
         let mut method_idx: u32 = 0;
@@ -468,7 +493,7 @@ impl DexClass {
             method._code_off = code_off as u32;
             method.access_flags = access_flags as u32;
             method.is_direct = true;
-            self._methods.push(method_idx as usize);
+            self._methods.push(method_idx);
         }
 
         method_idx = 0;
@@ -485,18 +510,46 @@ impl DexClass {
             method.access_flags = access_flags as u32;
             method.is_direct = false;
             method.is_virtual = true;
-            self._methods.push(method_idx as usize);
+            self._methods.push(method_idx);
         }
     }
 
-    pub fn methods(&mut self) -> Vec<u32> {
+    pub fn methods(&mut self) -> &[u32] {
         self.parse_class_data();
-        self._methods.iter().map(|&x| x as u32).collect()
+        &self._methods
     }
 
-    pub fn fields(&mut self) -> Vec<u32> {
+    pub fn fields(&mut self) -> &[u32] {
         self.parse_class_data();
-        self._fields.iter().map(|&x| x as u32).collect()
+        &self._fields
+    }
+
+    pub fn superclass_idx(&mut self) -> u32 {
+        if self._superclass_idx.is_none() {
+            let superclass_idx =
+                _STRUCT_I::unpack_from(&self.context.buf, (self.class_def_off + 8) as usize);
+            self._superclass_idx = Some(superclass_idx);
+        }
+        return self._superclass_idx.unwrap();
+    }
+
+    pub fn interface_type_ids(&mut self) -> &[u16] {
+        if self._interface_type_idxs.is_none() {
+            let mut idxs = Vec::new();
+            let interface_off =
+                _STRUCT_I::unpack_from(&self.context.buf, (self.class_def_off + 12) as usize);
+            if interface_off != 0 {
+                let size = _STRUCT_I::unpack_from(&self.context.buf, interface_off as usize);
+                for off in 0..size {
+                    idxs.push(_STRUCT_H::unpack_from(
+                        &self.context.buf,
+                        (interface_off + 4 + off * 2) as usize,
+                    ));
+                }
+            }
+            self._interface_type_idxs = Some(idxs);
+        }
+        self._interface_type_idxs.as_ref().unwrap()
     }
 }
 
@@ -694,6 +747,19 @@ pub struct DEX {
 impl DEX {
     pub fn parse(buf: &[u8], name: &str) -> Self {
         Self::from_vec(buf.to_vec(), name)
+    }
+
+    /// Recover the backing buffer so a worker can reuse its pages for the next
+    /// DEX instead of allocating fresh multi-MB memory per entry.
+    pub fn into_vec(mut self) -> Vec<u8> {
+        let buf = std::mem::replace(&mut self.buf, std::rc::Rc::new(Vec::new()));
+        // Dropping the DEX releases the context's second reference, leaving
+        // `buf` uniquely owned in the common case (no copy).
+        drop(self);
+        match std::rc::Rc::try_unwrap(buf) {
+            Ok(vec) => vec,
+            Err(shared) => shared.as_ref().clone(),
+        }
     }
 
     pub fn from_vec(buf: Vec<u8>, name: &str) -> Self {

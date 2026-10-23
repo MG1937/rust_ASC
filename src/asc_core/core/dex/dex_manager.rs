@@ -87,15 +87,12 @@ impl DexManager {
         let mut clazz = dex_ref.get_class(dalvik_class_fmt)
             .expect(&format!("Class {} not found in DEX.", dalvik_class_fmt));
 
-        let method_indices: Vec<u32> = clazz.methods();
-        let field_indices: Vec<u32> = clazz.fields();
-
         let mut dvminterp = DvmInterpreter::new();
         dvminterp.addHandler(Box::new(IndexHandler::new()));
         dvminterp
             .getHandler_mut::<IndexHandler>()
             .expect("IndexHandler is not registered")
-            .preregister_own_fields(&field_indices);
+            .preregister_own_fields(clazz.fields());
 
         let mut modified_bytecodes: HashMap<u32, Vec<u8>> = HashMap::new();
 
@@ -103,7 +100,7 @@ impl DexManager {
 
         // 1. Execute interpreter to collect indices (optional modification step)
         let t_interp_start = Instant::now();
-        for &method_idx in &method_indices {
+        for &method_idx in clazz.methods() {
             let method = dex_ref.get_method(method_idx);
             let mut bytecode_raw = method.bytecode();
             {
