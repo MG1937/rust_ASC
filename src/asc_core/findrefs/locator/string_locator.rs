@@ -82,16 +82,12 @@ impl<'a> StringLocator<'a> {
             self._debug_log("build_map", t_start, Some(0));
             return;
         }
-        // might buggy.. r8 not specify the first string data off is the begging of all string data off, but usually it was...
-        let Some(strdata_start) = _STRUCT_I::try_unpack_from(buf, string_ids_off) else {
-            self.parsed = true;
-            self._debug_log("build_map", t_start, Some(0));
-            return;
-        };
-        self.strdata_start = strdata_start;
-        let mut data_offset = 0u32;
+        // string_data_item order is independent of string_ids order, so take the
+        // physical bounds from the table instead of assuming index 0 is first.
+        let mut min_offset = u32::MAX;
+        let mut max_offset = 0u32;
         for idx in 0..string_ids_size {
-            data_offset = _STRUCT_I::try_unpack_from(buf, string_ids_off).unwrap();
+            let data_offset = _STRUCT_I::try_unpack_from(buf, string_ids_off).unwrap();
             string_ids_off += 4;
             if data_offset as usize >= buf.len() {
                 self.stridx_map.clear();
@@ -100,12 +96,12 @@ impl<'a> StringLocator<'a> {
                 self._debug_log("build_map", t_start, Some(0));
                 return;
             }
+            min_offset = min_offset.min(data_offset);
+            max_offset = max_offset.max(data_offset);
             stridx_map.push(((data_offset as u64) << 32) | idx as u64);
         }
-        // Include the final string_data_item. The existing lookup maps a
-        // match through the following string offset, so add an end sentinel
-        // for the final item without changing that mapping scheme.
-        let mut end = data_offset as usize;
+        self.strdata_start = min_offset;
+        let mut end = max_offset as usize;
         while end < buf.len() && buf[end] & 0x80 != 0 {
             end += 1;
         }
@@ -127,7 +123,6 @@ impl<'a> StringLocator<'a> {
             return;
         };
         self.strdata_end = (payload_start + relative_end + 1) as u32;
-        stridx_map.push(((self.strdata_end as u64) << 32) | string_ids_size as u64);
         stridx_map.sort_unstable();
         self.parsed = true;
         let count = stridx_map.len();
@@ -146,27 +141,29 @@ impl<'a> StringLocator<'a> {
         let finder = Finder::new(string.as_bytes());
         let stridx_map = &self.stridx_map;
         let mut located_idx = HashSet::new();
-        let mut last_offset = usize::MAX;
+        let mut last_idx = u32::MAX;
 
         for match_ in finder.find_iter(submem) {
-            let mut offset = strdata_start + match_ + string.len();
-            // find null terminator after the match
-            if offset < strdata_end {
-                let slice = &buf[offset..strdata_end];
-                if let Some(null_rel) = memchr::memchr(0, slice) {
-                    offset = offset + null_rel + 1; // skip over 00 byte
-                    if offset == last_offset {
-                        continue;
-                    }
-                    last_offset = offset;
-                    let key = (offset as u64) << 32;
-                    let pos = stridx_map.partition_point(|&entry| entry < key);
-                    if pos < stridx_map.len() && stridx_map[pos] >> 32 == offset as u64 {
-                        if let Some(idx) = (stridx_map[pos] as u32).checked_sub(1) {
-                            located_idx.insert(idx);
-                        }
-                    }
-                }
+            // fix issue for https://github.com/MG1937/rust_ASC/issues/8
+            // 20261023
+            // str idx order is independent of str data off
+            // str_idx0 -> 0x100 ; 0x100 off = aaa
+            // str_idx1 -> 0x300 ; 0x200 off = bbb
+            // str_idx2 -> 0x200 ; 0x300 off = ccc
+            // old logic will try to match string from str data area, assume we match bbb
+            // and should get str_idx2, but old logic assume str idx order is related with str data off,
+            // if we find next \x00 pos and locate stridx by this pos, then return stridx - 1 would be the idx we want.
+            //
+            // new logic goto find current pos's correspond idx directly
+            // stridx_map encode str_offset & str_idx by [str_offset as u64 << 32 | str_idx]
+            let offset = (strdata_start + match_) as u64;
+            let pos = stridx_map.partition_point(|&entry| entry >> 32 <= offset);
+            let Some(idx) = pos.checked_sub(1).map(|index| stridx_map[index] as u32) else {
+                continue;
+            };
+            if idx != last_idx {
+                last_idx = idx;
+                located_idx.insert(idx);
             }
         }
         located_idx
