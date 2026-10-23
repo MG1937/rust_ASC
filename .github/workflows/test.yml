@@ -20,6 +20,8 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
+          - windows-latest
+          - macos-latest
     steps:
       - name: Check out source and submodules
         uses: actions/checkout@v4

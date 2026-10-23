@@ -80,6 +80,13 @@ rust_ASC findrefs --thread 10 app.apk type com.example.Main
 rust_ASC findrefs --thread 10 app.apk method onCreate --class com.example.Main
 rust_ASC findrefs --thread 10 app.apk field apiKey --class com.example.Main
 
+# Search subclasses or interface implementors.
+rust_ASC findrefs --thread 10 app.apk extends android.app.Activity
+rust_ASC findrefs --thread 10 app.apk impl android.os.IInterface
+
+# Treat --class as a fuzzy descriptor substring instead of an exact name.
+rust_ASC findrefs --thread 10 app.apk method notify --class poc --fuzzy-class
+
 # Decompile one class from an APK.
 rust_ASC getclass --thread 10 --debug app.apk com.example.Main
 rust_ASC getclass --thread 10 app.apk com.example.Main -o Main.java
@@ -105,11 +112,13 @@ rust_ASC getmanifest app.apk -o AndroidManifest.xml
 rust_ASC export --thread 10 --debug app.apk output
 ```
 
-`listmethod` prints one full Dalvik method descriptor per line, for example `Lcom/example/Main;->onCreate(Landroid/os/Bundle;)V`. It lists only methods defined in class data, including native and abstract methods, not external methods that are merely referenced. `--class` matches an exact dotted name or Dalvik descriptor; `--filter` / `-f` matches a case insensitive method name substring. Results retain DEX/class/declaration order and duplicate definitions across DEX files. Like `listclass`, `-o` writes the list instead of printing it; no matches produce an empty list.
+`findrefs` takes `string`, `type`, `extends`, `impl`, `method`, or `field`. `extends` and `impl` print matching class descriptors; the rest print referencing methods. For `method` and `field`, `--class` is an exact dotted name or Dalvik descriptor, and `--fuzzy-class` makes it a case sensitive substring. `-o` also writes the output to a file.
 
-`liststring` prints one string pool value per line, read straight from the DEX string table rather than from class or method data: `findrefs string` reports who references a literal, `liststring` reports which literals exist, including the ones nothing references, so an empty `findrefs` result means no reference rather than not present. `--filter` / `-f` matches a case insensitive substring anywhere in the value and uses the same predicate as `findrefs string`, so a listed string and a located string agree on what matches. Order is DEX central-directory order followed by string index, which is the index a `findrefs` row resolves through; duplicates across DEX files are preserved. Like `listclass`, `-o` writes the list instead of printing it, and no matches produce an empty list. A pool holds arbitrary payloads, so a value that contains a newline spans several lines here, exactly as a `findrefs` matched payload does; `-o` uses the same framing.
+`listmethod` prints one Dalvik method descriptor per line, for example `Lcom/example/Main;->onCreate(Landroid/os/Bundle;)V`. It lists only methods defined in class data, in DEX/class/declaration order with duplicates preserved. `--class` takes an exact dotted name or descriptor; `-f` is a case insensitive name substring. `-o` writes to a file instead of stdout.
 
-`export` writes one `.java` pseudocode file per class under package-relative paths in the output directory. Its multi-threaded APK export pipeline is supplied by [MG1937/radguard](https://github.com/MG1937/radguard). With `--debug`, it reports the APK export lifecycle and worker activity.
+`liststring` prints one string pool value per line, straight from the DEX string table, including literals nothing references. Order is DEX central-directory then string index; duplicates across DEX files are preserved. `-f` is a case insensitive substring filter, while `findrefs string` is case sensitive. `-o` writes to a file instead of stdout. Values containing newlines span multiple lines.
+
+`export` writes one `.java` pseudocode file per class under package-relative paths in the output directory, using the parallel APK pipeline from [MG1937/radguard](https://github.com/MG1937/radguard). `--debug` logs the export lifecycle.
 
 ## MCP
 
@@ -118,6 +127,8 @@ rust_ASC export --thread 10 --debug app.apk output
 The `listmethod` tool accepts `apk_path`, optional `class_name`, `filter`, `thread`, and `output`. It returns exactly the CLI stdout; with `output`, it writes the method list to that file and returns empty text.
 
 The `liststring` tool accepts `apk_path`, optional `filter`, `thread`, and `output`, with the same stdout and `output` semantics.
+
+The `findrefs` tool accepts `apk_path`, `query`, optional `thread`, and optional `output`. `query.kind` is one of `string`, `type`, `method`, or `field`; `method` and `field` take optional `name`, `class_name`, and `fuzzy_class`. `extends` and `impl` are CLI only.
 
 Configure it in your MCP client:
 
