@@ -16,8 +16,8 @@ use crate::asc_client::apk::dex_reader::{
     write_dex_strings as _write_strings,
 };
 use crate::asc_client::apk::loader::{
-    _inflate_dex as _load_dex, _inflate_dex_into, _inflate_dex_into_with,
-    _inflate_dex_prefix_into, _parse_cd_dex_entries as _parse_entries, DexEntry,
+    _inflate_dex_into_with, _inflate_dex_prefix_into,
+    _parse_cd_dex_entries_checked as _parse_entries_checked, DexEntry,
 };
 use crate::asc_client::dex_container::{
     dex041_logical_offsets, into_logical_dex_buffers, iter_logical_dex_buffers,
@@ -146,7 +146,7 @@ impl ApkHandler {
 
     fn _log(&self, msg: &str) {
         if self.debug {
-            println!("{msg}");
+            eprintln!("{msg}");
         }
     }
 
@@ -160,6 +160,10 @@ impl ApkHandler {
     }
 
     pub fn get_class_dex(&self, dalvik_class: &str) -> Option<(String, Vec<u8>)> {
+        self.try_get_class_dex(dalvik_class).ok().flatten()
+    }
+
+    pub fn try_get_class_dex(&self, dalvik_class: &str) -> Result<Option<(String, Vec<u8>)>, String> {
         // DEX string_data_item uses MUTF-8. Non-BMP descriptors therefore need
         // CESU-8 bytes to preserve the table's UTF-16 code-unit ordering.
         let target_bytes =
@@ -169,8 +173,8 @@ impl ApkHandler {
                 dalvik_class.as_bytes().to_vec()
             };
         let t_start = Instant::now();
-        let mm = self._open_apk().ok()?;
-        let mut entries = _parse_entries(&mm);
+        let mm = self._open_apk()?;
+        let mut entries = _parse_entries_checked(&mm)?;
         // Small compressed entries finish first, increasing the chance that
         // a hit cancels expensive inflates which have not started yet.
         entries.sort_by_key(|entry| entry.comp_size);
@@ -182,7 +186,7 @@ impl ApkHandler {
             ));
         }
         if entries.is_empty() {
-            return None;
+            return Ok(None);
         }
 
         let (hit_name, hit_data) = if entries.len() == 1 && self.max_workers > 0 {
@@ -250,7 +254,7 @@ impl ApkHandler {
                         &mut decompressor,
                         &|msg| {
                             if debug {
-                                println!("{msg}");
+                                eprintln!("{msg}");
                             }
                         },
                     );
@@ -282,7 +286,7 @@ impl ApkHandler {
                 t_start.elapsed().as_secs_f64() * 1_000_000.0
             ));
         }
-        hit_name.zip(hit_data)
+        Ok(hit_name.zip(hit_data))
     }
 
     /// List class descriptors as individual strings, preserving the row API.
@@ -404,7 +408,7 @@ impl ApkHandler {
 
         let t_start = Instant::now();
         let mm = self._open_apk()?;
-        let entries = _parse_entries(&mm);
+        let entries = _parse_entries_checked(&mm)?;
         if entries.is_empty() {
             return Ok(0);
         }
@@ -675,22 +679,96 @@ impl ApkHandler {
         )
     }
 
+    /// Stream individual string records in DEX table order.
+    pub fn for_each_string_record<E>(
+        &self,
+        filter: Option<&str>,
+        mut emit: E,
+    ) -> Result<usize, String>
+    where
+        E: FnMut(String) -> Result<(), String>,
+    {
+        let filter = filter.map(str::to_lowercase);
+        self._stream_dex_items(
+            "string",
+            |buf| {
+                let values = list_dex_strings(buf, filter.as_deref())?;
+                let count = values.len();
+                Ok((values.into_iter().map(String::into_bytes).collect(), count))
+            },
+            None,
+            |bytes| {
+                let value = String::from_utf8(bytes)
+                    .map_err(|error| format!("invalid UTF-8 string value: {error}"))?;
+                emit(value)
+            },
+        )
+    }
+
     pub fn for_each_findrefs(
         &self,
         find_type: &str,
         find: &FindRefInput,
     ) -> Vec<(String, Vec<String>)> {
+        self.try_for_each_findrefs(
+            find_type,
+            find,
+            crate::asc_client::asc_handler::FindRefsDisplayOptions::default(),
+        )
+        .unwrap_or_default()
+    }
+
+    pub fn try_for_each_findrefs(
+        &self,
+        find_type: &str,
+        find: &FindRefInput,
+        display: crate::asc_client::asc_handler::FindRefsDisplayOptions,
+    ) -> Result<Vec<(String, Vec<String>)>, String> {
+        let records = self.try_for_each_findrefs_records(find_type, find, display)?;
+        Ok(records
+            .into_iter()
+            .map(|(dex_name, recs)| {
+                let lines = recs
+                    .into_iter()
+                    .map(|record| {
+                        if let (Some(class), Some(relation), Some(target)) =
+                            (record.class, record.relation, record.target)
+                        {
+                            format!("{} | {} {} {}", record.dex, class, relation, target)
+                        } else {
+                            let caller = record.caller.unwrap_or_default();
+                            if display.no_match {
+                                format!("{} | {}", record.dex, caller)
+                            } else {
+                                format!(
+                                    "{} | {} | matched=({})",
+                                    record.dex,
+                                    caller,
+                                    record.matched.join("; ")
+                                )
+                            }
+                        }
+                    })
+                    .collect();
+                (dex_name, lines)
+            })
+            .collect())
+    }
+
+    pub fn try_for_each_findrefs_records(
+        &self,
+        find_type: &str,
+        find: &FindRefInput,
+        display: crate::asc_client::asc_handler::FindRefsDisplayOptions,
+    ) -> Result<Vec<(String, Vec<crate::asc_client::asc_handler::FindRefJsonRecord>)>, String> {
         let t_start = Instant::now();
-        let apk_buf = match self._open_apk() {
-            Ok(apk_buf) => Arc::new(apk_buf),
-            Err(_) => return Vec::new(),
-        };
-        let mut entries = _parse_entries(&apk_buf);
+        let apk_buf = Arc::new(self._open_apk()?);
+        let mut entries = _parse_entries_checked(&apk_buf)?;
         entries.sort_by_key(|entry| {
             std::cmp::Reverse(entry.comp_size as u64 + entry.uncomp_size as u64 * 2 / 3)
         });
         if entries.is_empty() || self.max_workers == 0 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let entries = Arc::new(entries);
@@ -721,12 +799,13 @@ impl ApkHandler {
                         index
                     };
                     if let Ok(result) =
-                        crate::asc_client::apk::worker::_findrefs_worker_from_buf_into(
+                        crate::asc_client::apk::worker::_findrefs_worker_records_from_buf_into(
                             &apk_buf,
                             &entries[index],
                             &find_type,
                             &find,
                             true,
+                            display,
                             &mut inflate_buf,
                             &mut decompressor,
                         )
@@ -752,12 +831,13 @@ impl ApkHandler {
                 index
             };
             if let Ok(result) =
-                crate::asc_client::apk::worker::_findrefs_worker_from_buf_into(
+                crate::asc_client::apk::worker::_findrefs_worker_records_from_buf_into(
                     &apk_buf,
                     &entries[index],
                     find_type,
                     &find,
                     true,
+                    display,
                     &mut inflate_buf,
                     &mut decompressor,
                 )
@@ -776,7 +856,7 @@ impl ApkHandler {
         // established deterministic name ordering.
         final_results.sort_by(|left, right| left.0.cmp(&right.0));
         if self.debug {
-            for (dex_name, _lines, inflate_us, process_us, pid) in &final_results {
+            for (dex_name, _records, inflate_us, process_us, pid) in &final_results {
                 self._log(&format!(
                     "[APK] [P{pid}] '{dex_name}' inflate={inflate_us:.2} us process={process_us:.2} us"
                 ));
@@ -788,9 +868,193 @@ impl ApkHandler {
                 self.max_workers,
             ));
         }
-        final_results
+        Ok(final_results
             .into_iter()
-            .map(|(dex_name, lines, _inflate_us, _process_us, _pid)| (dex_name, lines))
-            .collect()
+            .map(|(dex_name, records, _inflate_us, _process_us, _pid)| (dex_name, records))
+            .collect())
+    }
+
+    pub fn try_get_classes_batch(
+        &self,
+        dalvik_classes: &[String],
+        include_metadata: bool,
+    ) -> Result<
+        Vec<(
+            String,
+            Option<(
+                String,
+                String,
+                Vec<crate::asc_core::utils::decompiler::MemberReference>,
+            )>,
+        )>,
+        String,
+    > {
+        use std::collections::{HashMap, HashSet};
+        if dalvik_classes.is_empty() {
+            return Ok(Vec::new());
+        }
+        if dalvik_classes.len() == 1 {
+            let cls = &dalvik_classes[0];
+            let Some((dex_name, dex_buf)) = self.try_get_class_dex(cls)? else {
+                return Ok(vec![(cls.clone(), None)]);
+            };
+            let asc = crate::asc_client::asc_handler::AscHandler::new(self.debug);
+            let (source, refs) = if include_metadata {
+                asc.getclass_with_metadata(&dex_buf, cls)
+            } else {
+                (asc.getclass(&dex_buf, cls), Vec::new())
+            };
+            return Ok(vec![(cls.clone(), Some((dex_name, source, refs)))]);
+        }
+
+        let mm = self._open_apk()?;
+        let mut entries = _parse_entries_checked(&mm)?;
+        entries.sort_by_key(|entry| entry.comp_size);
+        if entries.is_empty() {
+            return Ok(dalvik_classes
+                .iter()
+                .map(|c| (c.clone(), None))
+                .collect());
+        }
+
+        let target_set: HashSet<&str> = dalvik_classes.iter().map(String::as_str).collect();
+        let mut remaining: HashSet<String> = dalvik_classes.iter().cloned().collect();
+        let mut decompiled_map: HashMap<
+            String,
+            (
+                String,
+                String,
+                Vec<crate::asc_core::utils::decompiler::MemberReference>,
+            ),
+        > = HashMap::with_capacity(target_set.len());
+
+        let mut scratch = Vec::new();
+        let mut decompressor = libdeflater::Decompressor::new();
+        let worker_count = self.max_workers.max(1);
+
+        for entry in &entries {
+            if remaining.is_empty() {
+                break;
+            }
+            if _inflate_dex_prefix_into(
+                &mm,
+                entry,
+                &mut scratch,
+                &mut decompressor,
+                class_names_prefix_len,
+            )
+            .is_err()
+            {
+                continue;
+            }
+            let offsets = dex041_logical_offsets(&scratch);
+            let has_match = if offsets.len() <= 1 {
+                list_dex_classes(&scratch, None, None)
+                    .map(|names| names.iter().any(|n| remaining.contains(n.as_str())))
+                    .unwrap_or(false)
+            } else {
+                true
+            };
+            if !has_match {
+                continue;
+            }
+            if _inflate_dex_into_with(&mm, entry, &mut scratch, &mut decompressor).is_err() {
+                continue;
+            }
+            for (dex_name, dex_buf) in
+                into_logical_dex_buffers(&entry.name, std::mem::take(&mut scratch))
+            {
+                if remaining.is_empty() {
+                    break;
+                }
+                let Ok(names) = list_dex_classes(&dex_buf, None, None) else {
+                    continue;
+                };
+                let mut matched_in_dex = Vec::new();
+                for name in names {
+                    if remaining.remove(&name) {
+                        matched_in_dex.push(name);
+                    }
+                }
+                if matched_in_dex.is_empty() {
+                    continue;
+                }
+                let arc_bytes: Arc<[u8]> = Arc::from(dex_buf);
+                let Ok(decompiler) =
+                    radguard::Decompiler::parse_owned(Arc::clone(&arc_bytes))
+                        .map(|d| d.with_debug(self.debug))
+                else {
+                    let asc = crate::asc_client::asc_handler::AscHandler::new(self.debug);
+                    for cls in matched_in_dex {
+                        let (src, refs) = if include_metadata {
+                            asc.getclass_with_metadata(&arc_bytes, &cls)
+                        } else {
+                            (asc.getclass(&arc_bytes, &cls), Vec::new())
+                        };
+                        decompiled_map.insert(cls, (dex_name.clone(), src, refs));
+                    }
+                    continue;
+                };
+                let pool_size = worker_count.min(matched_in_dex.len());
+                if pool_size <= 1 {
+                    let asc = crate::asc_client::asc_handler::AscHandler::new(self.debug);
+                    for cls in matched_in_dex {
+                        let (src, mut refs) =
+                            asc.getclass_from_decompiler(&decompiler, &arc_bytes, &cls);
+                        if !include_metadata {
+                            refs.clear();
+                        }
+                        decompiled_map.insert(cls, (dex_name.clone(), src, refs));
+                    }
+                } else {
+                    let chunk_size = matched_in_dex.len().div_ceil(pool_size);
+                    let debug = self.debug;
+                    let chunk_results: Vec<
+                        Vec<(
+                            String,
+                            String,
+                            Vec<crate::asc_core::utils::decompiler::MemberReference>,
+                        )>,
+                    > = thread::scope(|scope| {
+                        let mut handles = Vec::with_capacity(pool_size);
+                        for chunk in matched_in_dex.chunks(chunk_size) {
+                            let decompiler = &decompiler;
+                            let arc_bytes = &arc_bytes;
+                            handles.push(scope.spawn(move || {
+                                let asc = crate::asc_client::asc_handler::AscHandler::new(debug);
+                                chunk
+                                    .iter()
+                                    .map(|cls| {
+                                        let (src, mut refs) = asc.getclass_from_decompiler(
+                                            decompiler,
+                                            arc_bytes,
+                                            cls,
+                                        );
+                                        if !include_metadata {
+                                            refs.clear();
+                                        }
+                                        (cls.clone(), src, refs)
+                                    })
+                                    .collect()
+                            }));
+                        }
+                        handles
+                            .into_iter()
+                            .filter_map(|h| h.join().ok())
+                            .collect()
+                    });
+                    for group in chunk_results {
+                        for (cls, src, refs) in group {
+                            decompiled_map.insert(cls, (dex_name.clone(), src, refs));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(dalvik_classes
+            .iter()
+            .map(|cls| (cls.clone(), decompiled_map.get(cls).cloned()))
+            .collect())
     }
 }

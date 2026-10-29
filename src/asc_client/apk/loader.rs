@@ -39,6 +39,20 @@ pub(crate) fn _find_eocd(buf: &[u8]) -> Option<usize> {
     None
 }
 
+pub(crate) fn _parse_cd_dex_entries_checked(buf: &[u8]) -> Result<Vec<DexEntry>, String> {
+    let eocd_off =
+        _find_eocd(buf).ok_or_else(|| "cannot parse APK: invalid ZIP archive".to_owned())?;
+    let cd_size = _STRUCT_I::unpack_from(buf, eocd_off + 12) as usize;
+    let cd_off = _STRUCT_I::unpack_from(buf, eocd_off + 16) as usize;
+    if cd_off
+        .checked_add(cd_size)
+        .is_none_or(|end| end > buf.len())
+    {
+        return Err("cannot parse APK: truncated ZIP central directory".to_owned());
+    }
+    Ok(_parse_cd_dex_entries(buf))
+}
+
 pub(crate) fn _parse_cd_dex_entries(buf: &[u8]) -> Vec<DexEntry> {
     let Some(eocd_off) = _find_eocd(buf) else {
         return Vec::new();

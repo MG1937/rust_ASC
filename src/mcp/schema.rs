@@ -95,6 +95,16 @@ enum RefQuery {
         /// Case sensitive Dalvik type descriptor substring.
         value: String,
     },
+    /// Find direct subclasses.
+    Extends {
+        /// Dotted class name or Dalvik descriptor.
+        value: String,
+    },
+    /// Find direct interface implementors.
+    Impl {
+        /// Dotted class name or Dalvik descriptor.
+        value: String,
+    },
     /// Find method call references.
     Method {
         /// Case sensitive method name substring. Supply name, class_name, or both.
@@ -250,6 +260,14 @@ fn findrefs(input: FindRefs) -> Vec<OsString> {
         }
         RefQuery::Type { value } => {
             args.push("type".into());
+            args.push(value.into());
+        }
+        RefQuery::Extends { value } => {
+            args.push("extends".into());
+            args.push(value.into());
+        }
+        RefQuery::Impl { value } => {
+            args.push("impl".into());
             args.push(value.into());
         }
         RefQuery::Method {

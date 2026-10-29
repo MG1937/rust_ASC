@@ -30,7 +30,7 @@ https://github.com/user-attachments/assets/f1f71a75-1eca-4647-89ce-406ed2c63c6b
 - The APK is memory-mapped, and only the DEX entries a query needs are inflated.
 - Cross-DEX scans run in parallel, so a search over dozens of DEX files stays in the millisecond range.
 - R8 output is already highly structured. Searches jump to candidate offsets directly instead of rebuilding a bloated cross-reference database.
-- On a hit, rust_ASC rebuilds a minimal self-consistent DEX in memory and decompiles it immediately.
+- On a hit, rust_ASC decompiles the class directly from the containing DEX without rebuilding it. It falls back to rebuilding a minimal self-consistent DEX in memory only when direct decompilation fails for that class; `--debug` logs which path was taken.
 
 ## Build
 
