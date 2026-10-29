@@ -29,6 +29,12 @@ impl AscHandler {
 
     /// Extract and decompile the specified class.
     pub fn getclass(&self, dex_buf: &[u8], dalvik_class: &str) -> String {
+        let direct = decompile_dex_bytes(dex_buf, dalvik_class);
+        if !direct.starts_with("/* RadGuard decompiler error:")
+            && !direct.starts_with("Error: Class ")
+        {
+            return direct;
+        }
         let mut manager = DexManager::from_bytes(dex_buf.to_vec(), self.debug);
         let new_dex_bytes = manager.extract_and_rebuild(dalvik_class);
         decompile_dex_bytes(&new_dex_bytes, dalvik_class)
@@ -39,6 +45,12 @@ impl AscHandler {
         dex_buf: &[u8],
         dalvik_class: &str,
     ) -> (String, Vec<MemberReference>) {
+        let (direct_source, direct_refs) = decompile_dex_bytes_with_metadata(dex_buf, dalvik_class);
+        if !direct_source.starts_with("/* RadGuard decompiler error:")
+            && !direct_source.starts_with("Error: Class ")
+        {
+            return (direct_source, direct_refs);
+        }
         let mut manager = DexManager::from_bytes(dex_buf.to_vec(), self.debug);
         let new_dex_bytes = manager.extract_and_rebuild(dalvik_class);
         decompile_dex_bytes_with_metadata(&new_dex_bytes, dalvik_class)

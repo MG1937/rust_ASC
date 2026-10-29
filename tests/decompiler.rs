@@ -2,7 +2,6 @@ mod dex_fixture;
 mod zip_fixture;
 
 use std::collections::HashSet;
-use std::path::Path;
 use std::process::{Command, Output};
 
 use dex_fixture::{get_u32, make_dex, make_static_field_dex};
@@ -134,4 +133,40 @@ fn cli_on_stored_and_compressed_multidex_apk() {
             .unwrap()
             .contains("class Test"));
     }
+}
+
+#[test]
+fn asc_handler_getclass_recovers_float_double_cmp_and_unsigned_shift() {
+    let dex_bytes = std::fs::read("radguard/tests/fixtures/classes5.dex")
+        .expect("read classes5.dex fixture");
+    let handler = AscHandler::new(false);
+    let (source, refs) =
+        handler.getclass_with_metadata(&dex_bytes, "Lcom/maoyan/android/common/view/ratingbar/b;");
+    assert!(
+        source.contains("super.f = -1.0f;"),
+        "expected float literal -1.0f in:\n{source}"
+    );
+    assert!(
+        source.contains("super.g = 0.1f;"),
+        "expected float literal 0.1f in:\n{source}"
+    );
+    assert!(
+        source.contains("if (((double) v2_4) <= vtmp8)")
+            && source.contains("if (((double) v2_4) != vtmp8)"),
+        "expected multi-use cmpl/cmpg condition recovery in:\n{source}"
+    );
+    assert!(
+        !source.contains(" cmp "),
+        "unexpected raw cmp operator in:\n{source}"
+    );
+    assert!(
+        !refs.is_empty(),
+        "expected member references from getclass_with_metadata"
+    );
+
+    let scene_source = handler.getclass(&dex_bytes, "Lcom/meituan/android/addresscenter/scene/a;");
+    assert!(
+        scene_source.contains(">>> 59"),
+        "expected unsigned right shift >>> in:\n{scene_source}"
+    );
 }
