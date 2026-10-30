@@ -46,6 +46,8 @@ pub(crate) fn _findrefs_worker_from_buf(
     // Keep the decompiler graph out of CLI getclass/listclass startup. The
     // Python worker imports AscHandler only after receiving a findrefs task.
     use crate::asc_client::asc_handler::AscHandler;
+    #[allow(unused_imports)]
+    let _ = std::marker::PhantomData::<AscHandler>;
 
     let mut inflate_buf = Vec::new();
     let mut decompressor = libdeflater::Decompressor::new();
@@ -95,6 +97,60 @@ pub(crate) fn _findrefs_worker_from_buf_into(
     Ok((
         entry.name.clone(),
         lines,
+        (t1 - t0).as_secs_f64() * 1_000_000.0,
+        (t2 - t1).as_secs_f64() * 1_000_000.0,
+        std::process::id(),
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn _findrefs_worker_records_from_buf_into(
+    apk_buf: &[u8],
+    entry: &DexEntry,
+    find_type: &str,
+    find: &FindRefInput,
+    aggregate: bool,
+    display: crate::asc_client::asc_handler::FindRefsDisplayOptions,
+    inflate_buf: &mut Vec<u8>,
+    decompressor: &mut libdeflater::Decompressor,
+) -> Result<(String, Vec<crate::asc_client::asc_handler::FindRefJsonRecord>, f64, f64, u32), String> {
+    use crate::asc_client::asc_handler::AscHandler;
+
+    let t0 = Instant::now();
+    _inflate_dex_into_with(apk_buf, entry, inflate_buf, decompressor)?;
+    let t1 = Instant::now();
+    let mut records = Vec::new();
+    let handler = AscHandler::new(false);
+    if dex041_logical_offsets(inflate_buf).len() <= 1 {
+        let data = std::mem::take(inflate_buf);
+        let dex = crate::asc_core::utils::tinydex::DEX::from_vec(data, &entry.name);
+        records.extend(handler._findrefs_records(
+            &entry.name,
+            &dex,
+            find_type,
+            find,
+            aggregate,
+            display,
+        ));
+        *inflate_buf = dex.into_vec();
+    } else {
+        let data = std::mem::take(inflate_buf);
+        for (dex_name, dex_buf) in into_logical_dex_buffers(&entry.name, data) {
+            let dex = crate::asc_core::utils::tinydex::DEX::from_vec(dex_buf, &dex_name);
+            records.extend(handler._findrefs_records(
+                &dex_name,
+                &dex,
+                find_type,
+                find,
+                aggregate,
+                display,
+            ));
+        }
+    }
+    let t2 = Instant::now();
+    Ok((
+        entry.name.clone(),
+        records,
         (t1 - t0).as_secs_f64() * 1_000_000.0,
         (t2 - t1).as_secs_f64() * 1_000_000.0,
         std::process::id(),

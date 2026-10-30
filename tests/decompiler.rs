@@ -2,7 +2,6 @@ mod dex_fixture;
 mod zip_fixture;
 
 use std::collections::HashSet;
-use std::path::Path;
 use std::process::{Command, Output};
 
 use dex_fixture::{get_u32, make_dex, make_static_field_dex};
@@ -134,4 +133,163 @@ fn cli_on_stored_and_compressed_multidex_apk() {
             .unwrap()
             .contains("class Test"));
     }
+}
+
+#[test]
+fn asc_handler_getclass_recovers_float_double_cmp_and_unsigned_shift() {
+    let dex_bytes = std::fs::read("radguard/tests/fixtures/classes5.dex")
+        .expect("read classes5.dex fixture");
+    let handler = AscHandler::new(false);
+    let (source, refs) =
+        handler.getclass_with_metadata(&dex_bytes, "Lcom/maoyan/android/common/view/ratingbar/b;");
+    assert!(
+        source.contains("super.f = -1.0f;"),
+        "expected float literal -1.0f in:\n{source}"
+    );
+    assert!(
+        source.contains("super.g = 0.1f;"),
+        "expected float literal 0.1f in:\n{source}"
+    );
+    assert!(
+        source.contains("if (((double) v2_4) <= vtmp8)")
+            && source.contains("if (((double) v2_4) != vtmp8)"),
+        "expected multi-use cmpl/cmpg condition recovery in:\n{source}"
+    );
+    assert!(
+        !source.contains(" cmp "),
+        "unexpected raw cmp operator in:\n{source}"
+    );
+    assert!(
+        !refs.is_empty(),
+        "expected member references from getclass_with_metadata"
+    );
+
+    let scene_source = handler.getclass(&dex_bytes, "Lcom/meituan/android/addresscenter/scene/a;");
+    assert!(
+        scene_source.contains(">>> 59"),
+        "expected unsigned right shift >>> in:\n{scene_source}"
+    );
+}
+
+#[test]
+fn cli_supports_version_batch_getclass_json_findrefs_type_and_error_propagation() {
+    let ver = run_cli(&["--version"]);
+    assert!(ver.status.success(), "{}", stderr(&ver));
+    assert!(String::from_utf8_lossy(&ver.stdout).starts_with("rust_ASC "));
+
+    let missing_apk = run_cli(&["findrefs", "/nonexistent/no_such.apk", "string", "token"]);
+    assert!(!missing_apk.status.success());
+    assert!(stderr(&missing_apk).contains("cannot open APK"));
+
+    let missing_getclass = run_cli(&["getclass", "/nonexistent/no_such.apk", "example.Test"]);
+    assert!(!missing_getclass.status.success());
+    assert!(stderr(&missing_getclass).contains("cannot open APK"));
+
+    let directory = tempdir().unwrap();
+    let corrupt_apk = directory.path().join("corrupt.apk");
+    std::fs::write(&corrupt_apk, b"not a zip archive").unwrap();
+    let corrupt_res = run_cli(&[
+        "findrefs",
+        corrupt_apk.to_str().unwrap(),
+        "string",
+        "token",
+    ]);
+    assert!(!corrupt_res.status.success());
+    assert!(stderr(&corrupt_res).contains("invalid ZIP archive"));
+
+    let apk = directory.path().join("fixture.apk");
+    let dex = std::fs::read("radguard/tests/fixtures/classes5.dex").unwrap();
+    write_apk(&apk, &[("classes.dex", &dex)], CompressionMethod::Stored);
+    let apk_path = apk.to_str().unwrap();
+
+    // Dotted type name in findrefs type
+    let type_refs = run_cli(&[
+        "findrefs",
+        "--thread",
+        "2",
+        apk_path,
+        "type",
+        "com.maoyan.android.common.view.ratingbar.c",
+    ]);
+    assert!(type_refs.status.success(), "{}", stderr(&type_refs));
+    let type_stdout = String::from_utf8(type_refs.stdout).unwrap();
+    assert!(
+        type_stdout.contains("Lcom/maoyan/android/common/view/ratingbar/c;"),
+        "expected dotted findrefs type to match:\n{type_stdout}"
+    );
+
+    // JSON output on getclass always returns an array and exposes member_references with synthetic flag
+    let json_res = run_cli(&[
+        "getclass",
+        "--json",
+        apk_path,
+        "com.maoyan.android.common.view.ratingbar.b",
+    ]);
+    assert!(json_res.status.success(), "{}", stderr(&json_res));
+    let parsed: serde_json::Value = serde_json::from_slice(&json_res.stdout).unwrap();
+    let arr = parsed.as_array().expect("getclass --json must return an array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["class"], "Lcom/maoyan/android/common/view/ratingbar/b;");
+    assert_eq!(arr[0]["status"], "ok");
+    let refs = arr[0]["member_references"].as_array().unwrap();
+    assert!(refs.len() > 5);
+    assert!(refs[0].get("synthetic").and_then(|v| v.as_bool()).is_some());
+
+    // Batch getclass via --classes-file
+    let classes_file = directory.path().join("classes.txt");
+    std::fs::write(
+        &classes_file,
+        "com.maoyan.android.common.view.ratingbar.b\nLcom/meituan/ai/speech/fusetts/BuildConfig;\n",
+    )
+    .unwrap();
+    let batch_res = run_cli(&[
+        "getclass",
+        "--classes-file",
+        classes_file.to_str().unwrap(),
+        apk_path,
+    ]);
+    assert!(batch_res.status.success(), "{}", stderr(&batch_res));
+    let batch_stdout = String::from_utf8(batch_res.stdout).unwrap();
+    assert!(batch_stdout.contains("// === Class: Lcom/maoyan/android/common/view/ratingbar/b;"));
+    assert!(batch_stdout.contains("// === Class: Lcom/meituan/ai/speech/fusetts/BuildConfig;"));
+
+    // Filtered export via --prefix
+    let export_dir = directory.path().join("exported");
+    let export_res = run_cli(&[
+        "export",
+        "--prefix",
+        "com.maoyan.android.common.view.ratingbar",
+        apk_path,
+        export_dir.to_str().unwrap(),
+    ]);
+    assert!(export_res.status.success(), "{}", stderr(&export_res));
+    assert!(export_dir
+        .join("com/maoyan/android/common/view/ratingbar/b.java")
+        .exists());
+    assert!(!export_dir
+        .join("com/meituan/ai/speech/fusetts/BuildConfig.java")
+        .exists());
+
+    // Empty export prefix and missing class in export --classes-file fail with exit code 1
+    let empty_export = run_cli(&[
+        "export",
+        "--prefix",
+        "zzz.nothing.matches",
+        apk_path,
+        directory.path().join("empty_out").to_str().unwrap(),
+    ]);
+    assert!(!empty_export.status.success());
+    assert!(stderr(&empty_export).contains("No classes matched the export filter."));
+
+    let bad_classes_file = directory.path().join("bad_classes.txt");
+    std::fs::write(&bad_classes_file, "com.nonexistent.MissingClass\n").unwrap();
+    let missing_export = run_cli(&[
+        "export",
+        "--classes-file",
+        bad_classes_file.to_str().unwrap(),
+        apk_path,
+        directory.path().join("missing_out").to_str().unwrap(),
+    ]);
+    assert!(!missing_export.status.success());
+    assert!(stderr(&missing_export).contains("Class Lcom/nonexistent/MissingClass; not found in APK."));
 }
