@@ -38,6 +38,12 @@ use crate::asc_core::findrefs::findrefs_manager::FindRefInput;
 use crate::asc_core::findrefs::scan::method_id_scan::render_dex_methods;
 
 type DexChunkResult = Result<(Vec<Vec<u8>>, usize), String>;
+pub type BatchClassEntry = (
+    String,
+    String,
+    Vec<crate::asc_core::utils::decompiler::MemberReference>,
+);
+pub type BatchClassResult = Vec<(String, Option<BatchClassEntry>)>;
 
 /// Shared state for the ordered streaming pipeline.
 struct StreamState {
@@ -918,17 +924,7 @@ impl ApkHandler {
         &self,
         dalvik_classes: &[String],
         include_metadata: bool,
-    ) -> Result<
-        Vec<(
-            String,
-            Option<(
-                String,
-                String,
-                Vec<crate::asc_core::utils::decompiler::MemberReference>,
-            )>,
-        )>,
-        String,
-    > {
+    ) -> Result<BatchClassResult, String> {
         use std::collections::{HashMap, HashSet};
         if dalvik_classes.is_empty() {
             return Ok(Vec::new());
@@ -959,14 +955,8 @@ impl ApkHandler {
 
         let target_set: HashSet<&str> = dalvik_classes.iter().map(String::as_str).collect();
         let mut remaining: HashSet<String> = dalvik_classes.iter().cloned().collect();
-        let mut decompiled_map: HashMap<
-            String,
-            (
-                String,
-                String,
-                Vec<crate::asc_core::utils::decompiler::MemberReference>,
-            ),
-        > = HashMap::with_capacity(target_set.len());
+        let mut decompiled_map: HashMap<String, BatchClassEntry> =
+            HashMap::with_capacity(target_set.len());
 
         let mut scratch = Vec::new();
         let mut decompressor = libdeflater::Decompressor::new();
@@ -1049,13 +1039,7 @@ impl ApkHandler {
                 } else {
                     let chunk_size = matched_in_dex.len().div_ceil(pool_size);
                     let debug = self.debug;
-                    let chunk_results: Vec<
-                        Vec<(
-                            String,
-                            String,
-                            Vec<crate::asc_core::utils::decompiler::MemberReference>,
-                        )>,
-                    > = thread::scope(|scope| {
+                    let chunk_results: Vec<Vec<BatchClassEntry>> = thread::scope(|scope| {
                         let mut handles = Vec::with_capacity(pool_size);
                         for chunk in matched_in_dex.chunks(chunk_size) {
                             let decompiler = &decompiler;

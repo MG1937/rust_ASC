@@ -103,6 +103,7 @@ pub(crate) fn _findrefs_worker_from_buf_into(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn _findrefs_worker_records_from_buf_into(
     apk_buf: &[u8],
     entry: &DexEntry,
