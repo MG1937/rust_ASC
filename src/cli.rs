@@ -25,6 +25,7 @@ struct MemberRefDto<'a> {
     name: &'a str,
     descriptor: &'a str,
     declaration: bool,
+    synthetic: bool,
 }
 
 impl<'a> From<&'a MemberReference> for MemberRefDto<'a> {
@@ -40,6 +41,7 @@ impl<'a> From<&'a MemberReference> for MemberRefDto<'a> {
             name: &r.name,
             descriptor: &r.descriptor,
             declaration: r.declaration,
+            synthetic: r.synthetic,
         }
     }
 }
@@ -206,7 +208,7 @@ fn write_text(path: &str, text: &str) -> Result<(), String> {
     fs::write(path, content).map_err(|error| format!("cannot write {path}: {error}"))
 }
 
-fn _handle_getclass(args: &ArgMatches) -> Result<(), String> {
+fn _handle_getclass(args: &ArgMatches, mut out: impl Write) -> Result<(), String> {
     let t_start = Instant::now();
     let apk_path = args.get_one::<String>("apk_path").unwrap();
     let debug = args.get_flag("debug");
@@ -260,7 +262,7 @@ fn _handle_getclass(args: &ArgMatches) -> Result<(), String> {
         if let Some(output) = args.get_one::<String>("output") {
             write_text(output, &source_code)?;
         }
-        println!("{source_code}");
+        writeln!(out, "{source_code}").map_err(|e| format!("cannot write output: {e}"))?;
         return Ok(());
     }
 
@@ -301,20 +303,12 @@ fn _handle_getclass(args: &ArgMatches) -> Result<(), String> {
                 }
             })
             .collect();
-        let serialized = if items.len() == 1 {
-            if let Some(err) = &items[0].error {
-                return Err(err.clone());
-            }
-            serde_json::to_string_pretty(&items[0])
-                .map_err(|error| format!("cannot serialize JSON: {error}"))?
-        } else {
-            serde_json::to_string_pretty(&items)
-                .map_err(|error| format!("cannot serialize JSON: {error}"))?
-        };
+        let serialized = serde_json::to_string_pretty(&items)
+            .map_err(|error| format!("cannot serialize JSON: {error}"))?;
         if let Some(output) = args.get_one::<String>("output") {
             write_text(output, &serialized)?;
         }
-        println!("{serialized}");
+        writeln!(out, "{serialized}").map_err(|e| format!("cannot write output: {e}"))?;
         if !missing.is_empty() {
             return Err(format!(
                 "Class {} not found in APK.",
@@ -345,7 +339,7 @@ fn _handle_getclass(args: &ArgMatches) -> Result<(), String> {
         write_text(output, &combined)?;
     }
     if !combined.is_empty() {
-        print!("{combined}");
+        write!(out, "{combined}").map_err(|e| format!("cannot write output: {e}"))?;
     }
     if !missing.is_empty() {
         return Err(format!(
@@ -407,7 +401,7 @@ fn _write_json_lines_from_chunks<W: Write>(
         .map_err(|e| format!("cannot flush JSON output: {e}"))
 }
 
-fn _handle_listclass(args: &ArgMatches) -> Result<(), String> {
+fn _handle_listclass(args: &ArgMatches, mut out: impl Write) -> Result<(), String> {
     let t_start = Instant::now();
     let apk_path = args.get_one::<String>("apk_path").unwrap();
     let debug = args.get_flag("debug");
@@ -423,8 +417,7 @@ fn _handle_listclass(args: &ArgMatches) -> Result<(), String> {
                 handler.for_each_class_chunk(prefix, cb)
             })?;
         } else {
-            let stdout = io::stdout();
-            _write_json_lines_from_chunks(BufWriter::new(stdout.lock()), |cb| {
+            _write_json_lines_from_chunks(BufWriter::new(&mut out), |cb| {
                 handler.for_each_class_chunk(prefix, cb)
             })?;
         }
@@ -436,11 +429,9 @@ fn _handle_listclass(args: &ArgMatches) -> Result<(), String> {
                 .map_err(|error| format!("cannot write {output}: {error}"))
         })?;
     } else {
-        let stdout = io::stdout();
-        let mut out = stdout.lock();
         handler.for_each_class_chunk(prefix, |chunk| {
             out.write_all(chunk)
-                .map_err(|error| format!("cannot write stdout: {error}"))
+                .map_err(|error| format!("cannot write output: {error}"))
         })?;
     }
 
@@ -453,7 +444,7 @@ fn _handle_listclass(args: &ArgMatches) -> Result<(), String> {
     Ok(())
 }
 
-fn _handle_listmethod(args: &ArgMatches) -> Result<(), String> {
+fn _handle_listmethod(args: &ArgMatches, mut out: impl Write) -> Result<(), String> {
     let t_start = Instant::now();
     let apk_path = args.get_one::<String>("apk_path").unwrap();
     let debug = args.get_flag("debug");
@@ -470,8 +461,7 @@ fn _handle_listmethod(args: &ArgMatches) -> Result<(), String> {
                 handler.for_each_method_chunk(class, filter, cb)
             })?;
         } else {
-            let stdout = io::stdout();
-            _write_json_lines_from_chunks(BufWriter::new(stdout.lock()), |cb| {
+            _write_json_lines_from_chunks(BufWriter::new(&mut out), |cb| {
                 handler.for_each_method_chunk(class, filter, cb)
             })?;
         }
@@ -483,11 +473,9 @@ fn _handle_listmethod(args: &ArgMatches) -> Result<(), String> {
                 .map_err(|error| format!("cannot write {output}: {error}"))
         })?;
     } else {
-        let stdout = io::stdout();
-        let mut out = stdout.lock();
         handler.for_each_method_chunk(class, filter, |chunk| {
             out.write_all(chunk)
-                .map_err(|error| format!("cannot write stdout: {error}"))
+                .map_err(|error| format!("cannot write output: {error}"))
         })?;
     }
     if debug {
@@ -499,7 +487,7 @@ fn _handle_listmethod(args: &ArgMatches) -> Result<(), String> {
     Ok(())
 }
 
-fn _handle_liststring(args: &ArgMatches) -> Result<(), String> {
+fn _handle_liststring(args: &ArgMatches, mut out: impl Write) -> Result<(), String> {
     let t_start = Instant::now();
     let apk_path = args.get_one::<String>("apk_path").unwrap();
     let debug = args.get_flag("debug");
@@ -515,7 +503,7 @@ fn _handle_liststring(args: &ArgMatches) -> Result<(), String> {
                 File::create(output).map_err(|error| format!("cannot write {output}: {error}"))?,
             ))
         } else {
-            Box::new(BufWriter::new(io::stdout().lock()))
+            Box::new(BufWriter::new(&mut out))
         };
         let mut seen = unique.then(HashSet::new);
         if json_output {
@@ -567,11 +555,9 @@ fn _handle_liststring(args: &ArgMatches) -> Result<(), String> {
                 .map_err(|error| format!("cannot write {output}: {error}"))
         })?;
     } else {
-        let stdout = io::stdout();
-        let mut out = stdout.lock();
         handler.for_each_string_chunk(filter, |chunk| {
             out.write_all(chunk)
-                .map_err(|error| format!("cannot write stdout: {error}"))
+                .map_err(|error| format!("cannot write output: {error}"))
         })?;
     }
     if debug {
@@ -635,11 +621,16 @@ fn _handle_export(args: &ArgMatches) -> Result<(), String> {
         .transpose()?
         .map(|list| list.into_iter().collect::<HashSet<String>>());
 
+    let has_filter = prefix.is_some() || classes_whitelist.is_some();
+    let expected_classes = classes_whitelist.clone();
+    let matched_classes = std::sync::Arc::new(std::sync::Mutex::new(HashSet::new()));
+
     let mut options = ExportOptions::default().with_threads(thread);
     if debug {
         options = options.with_progress(_export_progress);
     }
-    if prefix.is_some() || classes_whitelist.is_some() {
+    if has_filter {
+        let matched = std::sync::Arc::clone(&matched_classes);
         options = options.with_class_filter(move |descriptor| {
             if let Some(ref p) = prefix
                 && !descriptor.starts_with(p.as_str())
@@ -651,11 +642,24 @@ fn _handle_export(args: &ArgMatches) -> Result<(), String> {
             {
                 return false;
             }
+            matched.lock().unwrap().insert(descriptor.to_owned());
             true
         });
     }
     let summary = export_to_directory(apk_path, output_directory, options)
         .map_err(|error| format!("cannot export APK: {error}"))?;
+
+    if let Some(expected) = expected_classes {
+        let matched = matched_classes.lock().unwrap();
+        let mut missing: Vec<_> = expected.difference(&*matched).cloned().collect();
+        if !missing.is_empty() {
+            missing.sort();
+            return Err(format!("Class {} not found in APK.", missing.join(", ")));
+        }
+    }
+    if has_filter && summary.classes == 0 {
+        return Err("No classes matched the export filter.".to_owned());
+    }
 
     if debug {
         eprintln!(
@@ -670,14 +674,14 @@ fn _handle_export(args: &ArgMatches) -> Result<(), String> {
     Ok(())
 }
 
-fn _handle_getmanifest(args: &ArgMatches) -> Result<(), String> {
+fn _handle_getmanifest(args: &ArgMatches, mut out: impl Write) -> Result<(), String> {
     let t_start = Instant::now();
     let apk_path = args.get_one::<String>("apk_path").unwrap();
     let xml = get_manifest_xml(apk_path, true)?;
     if let Some(output) = args.get_one::<String>("output") {
         write_text(output, &xml)?;
     }
-    println!("{xml}");
+    writeln!(out, "{xml}").map_err(|e| format!("cannot write output: {e}"))?;
 
     if args.get_flag("debug") {
         eprintln!(
@@ -688,7 +692,7 @@ fn _handle_getmanifest(args: &ArgMatches) -> Result<(), String> {
     Ok(())
 }
 
-fn _handle_findrefs(args: &ArgMatches) -> Result<(), String> {
+fn _handle_findrefs(args: &ArgMatches, mut out: impl Write) -> Result<(), String> {
     let t_start = Instant::now();
     let apk_path = args.get_one::<String>("apk_path").unwrap();
     let debug = args.get_flag("debug");
@@ -711,22 +715,20 @@ fn _handle_findrefs(args: &ArgMatches) -> Result<(), String> {
         if let Some(ref path) = output_path {
             write_text(path, &serialized)?;
         }
-        println!("{serialized}");
+        writeln!(out, "{serialized}").map_err(|e| format!("cannot write output: {e}"))?;
     } else {
         let dex_lines = apk_handler.try_for_each_findrefs(&find_type, &find, display)?;
         let mut output_fp = output_path
             .as_deref()
             .map(|path| File::create(path).map_err(|error| format!("cannot create {path}: {error}")))
             .transpose()?;
-        let stdout = io::stdout();
-        let mut out = stdout.lock();
         for (_dex_name, lines) in dex_lines {
             if lines.is_empty() {
                 continue;
             }
             let text = lines.join("\n") + "\n";
             out.write_all(text.as_bytes())
-                .map_err(|error| format!("cannot write stdout: {error}"))?;
+                .map_err(|error| format!("cannot write output: {error}"))?;
             if let Some(file) = output_fp.as_mut() {
                 file.write_all(text.as_bytes())
                     .map_err(|error| format!("cannot write output: {error}"))?;
@@ -1072,6 +1074,36 @@ pub fn _build_main_parser() -> Command {
     command
 }
 
+pub fn run_from_into<I, T, W>(args: I, mut out: W) -> Result<(), String>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+    W: Write,
+{
+    let matches = match _build_main_parser().try_get_matches_from(args) {
+        Ok(matches) => matches,
+        Err(error) => {
+            if error.kind() == clap::error::ErrorKind::DisplayVersion {
+                write!(out, "{error}").map_err(|e| format!("cannot write output: {e}"))?;
+                return Ok(());
+            }
+            return Err(error.to_string());
+        }
+    };
+    match matches.subcommand() {
+        #[cfg(feature = "mcp")]
+        Some(("mcp", _)) => crate::mcp::run(),
+        Some(("getclass", args)) => _handle_getclass(args, out),
+        Some(("listclass", args)) => _handle_listclass(args, out),
+        Some(("listmethod", args)) => _handle_listmethod(args, out),
+        Some(("liststring", args)) => _handle_liststring(args, out),
+        Some(("export", args)) => _handle_export(args),
+        Some(("getmanifest", args)) => _handle_getmanifest(args, out),
+        Some(("findrefs", args)) => _handle_findrefs(args, out),
+        _ => Err("Unknown command".to_owned()),
+    }
+}
+
 pub fn run_from<I, T>(args: I) -> Result<(), String>
 where
     I: IntoIterator<Item = T>,
@@ -1087,16 +1119,20 @@ where
             return Err(error.to_string());
         }
     };
-    match matches.subcommand() {
+    if let Some(("mcp", _)) = matches.subcommand() {
         #[cfg(feature = "mcp")]
-        Some(("mcp", _)) => crate::mcp::run(),
-        Some(("getclass", args)) => _handle_getclass(args),
-        Some(("listclass", args)) => _handle_listclass(args),
-        Some(("listmethod", args)) => _handle_listmethod(args),
-        Some(("liststring", args)) => _handle_liststring(args),
+        return crate::mcp::run();
+    }
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    match matches.subcommand() {
+        Some(("getclass", args)) => _handle_getclass(args, &mut out),
+        Some(("listclass", args)) => _handle_listclass(args, &mut out),
+        Some(("listmethod", args)) => _handle_listmethod(args, &mut out),
+        Some(("liststring", args)) => _handle_liststring(args, &mut out),
         Some(("export", args)) => _handle_export(args),
-        Some(("getmanifest", args)) => _handle_getmanifest(args),
-        Some(("findrefs", args)) => _handle_findrefs(args),
+        Some(("getmanifest", args)) => _handle_getmanifest(args, &mut out),
+        Some(("findrefs", args)) => _handle_findrefs(args, &mut out),
         _ => Err("Unknown command".to_owned()),
     }
 }

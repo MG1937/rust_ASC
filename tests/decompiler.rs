@@ -218,7 +218,7 @@ fn cli_supports_version_batch_getclass_json_findrefs_type_and_error_propagation(
         "expected dotted findrefs type to match:\n{type_stdout}"
     );
 
-    // JSON output on getclass exposes member_references
+    // JSON output on getclass always returns an array and exposes member_references with synthetic flag
     let json_res = run_cli(&[
         "getclass",
         "--json",
@@ -227,9 +227,13 @@ fn cli_supports_version_batch_getclass_json_findrefs_type_and_error_propagation(
     ]);
     assert!(json_res.status.success(), "{}", stderr(&json_res));
     let parsed: serde_json::Value = serde_json::from_slice(&json_res.stdout).unwrap();
-    assert_eq!(parsed["class"], "Lcom/maoyan/android/common/view/ratingbar/b;");
-    assert_eq!(parsed["status"], "ok");
-    assert!(parsed["member_references"].as_array().unwrap().len() > 5);
+    let arr = parsed.as_array().expect("getclass --json must return an array");
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["class"], "Lcom/maoyan/android/common/view/ratingbar/b;");
+    assert_eq!(arr[0]["status"], "ok");
+    let refs = arr[0]["member_references"].as_array().unwrap();
+    assert!(refs.len() > 5);
+    assert!(refs[0].get("synthetic").and_then(|v| v.as_bool()).is_some());
 
     // Batch getclass via --classes-file
     let classes_file = directory.path().join("classes.txt");
@@ -265,4 +269,27 @@ fn cli_supports_version_batch_getclass_json_findrefs_type_and_error_propagation(
     assert!(!export_dir
         .join("com/meituan/ai/speech/fusetts/BuildConfig.java")
         .exists());
+
+    // Empty export prefix and missing class in export --classes-file fail with exit code 1
+    let empty_export = run_cli(&[
+        "export",
+        "--prefix",
+        "zzz.nothing.matches",
+        apk_path,
+        directory.path().join("empty_out").to_str().unwrap(),
+    ]);
+    assert!(!empty_export.status.success());
+    assert!(stderr(&empty_export).contains("No classes matched the export filter."));
+
+    let bad_classes_file = directory.path().join("bad_classes.txt");
+    std::fs::write(&bad_classes_file, "com.nonexistent.MissingClass\n").unwrap();
+    let missing_export = run_cli(&[
+        "export",
+        "--classes-file",
+        bad_classes_file.to_str().unwrap(),
+        apk_path,
+        directory.path().join("missing_out").to_str().unwrap(),
+    ]);
+    assert!(!missing_export.status.success());
+    assert!(stderr(&missing_export).contains("Class Lcom/nonexistent/MissingClass; not found in APK."));
 }

@@ -1,11 +1,23 @@
 // Auth: MG1937
 // Strict 1:1 translation from Python apk_handler.py
 
+use std::collections::VecDeque;
 use std::fs::File;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
+
+struct CachedApk {
+    path: String,
+    len: u64,
+    mtime: Option<SystemTime>,
+    mmap: Arc<Mmap>,
+    entries: Arc<Vec<DexEntry>>,
+}
+
+static APK_CACHE: OnceLock<Mutex<VecDeque<CachedApk>>> = OnceLock::new();
+const MAX_CACHED_APKS: usize = 8;
 
 use cesu8::to_java_cesu8;
 use memmap2::{Mmap, MmapOptions};
@@ -150,13 +162,43 @@ impl ApkHandler {
         }
     }
 
-    fn _open_apk(&self) -> Result<Mmap, String> {
+    fn _open_apk_cached(&self) -> Result<(Arc<Mmap>, Arc<Vec<DexEntry>>), String> {
+        let meta = std::fs::metadata(&self.apk_path)
+            .map_err(|error| format!("cannot open APK: {error}"))?;
+        let len = meta.len();
+        let mtime = meta.modified().ok();
+        let cache_lock = APK_CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
+        if let Ok(mut cache) = cache_lock.lock()
+            && let Some(pos) = cache.iter().position(|item| {
+                item.path == self.apk_path && item.len == len && item.mtime == mtime
+            })
+        {
+            let found = cache.remove(pos).unwrap();
+            let res = (Arc::clone(&found.mmap), Arc::clone(&found.entries));
+            cache.push_front(found);
+            return Ok(res);
+        }
+
         let fp = File::open(&self.apk_path).map_err(|error| format!("cannot open APK: {error}"))?;
-        unsafe {
+        let mmap = Arc::new(unsafe {
             MmapOptions::new()
                 .map(&fp)
-                .map_err(|error| format!("cannot memory-map APK: {error}"))
+                .map_err(|error| format!("cannot memory-map APK: {error}"))?
+        });
+        let entries = Arc::new(_parse_entries_checked(&mmap)?);
+        if let Ok(mut cache) = cache_lock.lock() {
+            if cache.len() >= MAX_CACHED_APKS {
+                cache.pop_back();
+            }
+            cache.push_front(CachedApk {
+                path: self.apk_path.clone(),
+                len,
+                mtime,
+                mmap: Arc::clone(&mmap),
+                entries: Arc::clone(&entries),
+            });
         }
+        Ok((mmap, entries))
     }
 
     pub fn get_class_dex(&self, dalvik_class: &str) -> Option<(String, Vec<u8>)> {
@@ -173,8 +215,8 @@ impl ApkHandler {
                 dalvik_class.as_bytes().to_vec()
             };
         let t_start = Instant::now();
-        let mm = self._open_apk()?;
-        let mut entries = _parse_entries_checked(&mm)?;
+        let (mm, cached_entries) = self._open_apk_cached()?;
+        let mut entries = (*cached_entries).clone();
         // Small compressed entries finish first, increasing the chance that
         // a hit cancels expensive inflates which have not started yet.
         entries.sort_by_key(|entry| entry.comp_size);
@@ -214,7 +256,6 @@ impl ApkHandler {
             // large; decompressed DEX buffers can consume substantial RAM.
             let cap = entries.len().min(6.max(self.max_workers.min(12)));
             let worker_count = cap.min(self.max_workers);
-            let mm = Arc::new(mm);
             let entries = Arc::new(entries);
             let work_queue = Arc::new(Mutex::new(0usize));
             let result = Arc::new(Mutex::new(None));
@@ -407,8 +448,7 @@ impl ApkHandler {
         }
 
         let t_start = Instant::now();
-        let mm = self._open_apk()?;
-        let entries = _parse_entries_checked(&mm)?;
+        let (mm, entries) = self._open_apk_cached()?;
         if entries.is_empty() {
             return Ok(0);
         }
@@ -762,8 +802,8 @@ impl ApkHandler {
         display: crate::asc_client::asc_handler::FindRefsDisplayOptions,
     ) -> Result<Vec<(String, Vec<crate::asc_client::asc_handler::FindRefJsonRecord>)>, String> {
         let t_start = Instant::now();
-        let apk_buf = Arc::new(self._open_apk()?);
-        let mut entries = _parse_entries_checked(&apk_buf)?;
+        let (apk_buf, cached_entries) = self._open_apk_cached()?;
+        let mut entries = (*cached_entries).clone();
         entries.sort_by_key(|entry| {
             std::cmp::Reverse(entry.comp_size as u64 + entry.uncomp_size as u64 * 2 / 3)
         });
@@ -907,8 +947,8 @@ impl ApkHandler {
             return Ok(vec![(cls.clone(), Some((dex_name, source, refs)))]);
         }
 
-        let mm = self._open_apk()?;
-        let mut entries = _parse_entries_checked(&mm)?;
+        let (mm, cached_entries) = self._open_apk_cached()?;
+        let mut entries = (*cached_entries).clone();
         entries.sort_by_key(|entry| entry.comp_size);
         if entries.is_empty() {
             return Ok(dalvik_classes

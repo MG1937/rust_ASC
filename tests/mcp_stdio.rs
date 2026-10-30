@@ -165,6 +165,7 @@ fn exposes_six_documented_cli_wrappers() {
     assert_eq!(
         names,
         [
+            "export",
             "findrefs",
             "getclass",
             "getmanifest",
@@ -203,7 +204,7 @@ fn exposes_six_documented_cli_wrappers() {
     }
     client.send(
         json!({"jsonrpc":"2.0", "id":100, "method":"tools/call", "params":{
-            "name":"export", "arguments":{}
+            "name":"unknown_tool", "arguments":{}
         }}),
     );
     assert_eq!(client.recv()["error"]["code"], -32602);
