@@ -9,8 +9,8 @@ Presented at Black Hat Europe Arsenal: [Droid ASC: R8 Compiler Optimization as a
 Repository links:
 
 - Python reference implementation: [MG1937/ASC](https://github.com/MG1937/ASC)
-- Rust implementation: [ltlly/rust_ASC](https://github.com/ltlly/rust_ASC)
-- Full-APK pseudocode exporter: [ltlly/radguard](https://github.com/ltlly/radguard)
+- Rust implementation: [MG1937/rust_ASC](https://github.com/MG1937/rust_ASC)
+- Full-APK pseudocode exporter: [MG1937/radguard](https://github.com/MG1937/radguard)
 
 https://github.com/user-attachments/assets/f1f71a75-1eca-4647-89ce-406ed2c63c6b
 
@@ -19,7 +19,7 @@ https://github.com/user-attachments/assets/f1f71a75-1eca-4647-89ce-406ed2c63c6b
 - Search code references for strings, types, methods, and fields across every DEX in an APK.
 - Locate and decompile one class directly from an APK.
 - List classes and defined methods, and decode `AndroidManifest.xml`.
-- Export pseudocode for every class in an APK with the public API of [ltlly/radguard](https://github.com/ltlly/radguard).
+- Export pseudocode for every class in an APK with the public API of [MG1937/radguard](https://github.com/MG1937/radguard).
 - Handle multi-DEX APKs and DEX 041 logical containers.
 - Use memory-mapped APK access and no on-disk cache.
 - Expose CLI queries as MCP tools over stdio.
@@ -37,7 +37,7 @@ https://github.com/user-attachments/assets/f1f71a75-1eca-4647-89ce-406ed2c63c6b
 `radguard` is a Git submodule. Clone it with the main repository:
 
 ```bash
-git clone --recurse-submodules https://github.com/ltlly/rust_ASC.git
+git clone --recurse-submodules https://github.com/MG1937/rust_ASC.git
 cd rust_ASC
 cargo build --release
 ```
