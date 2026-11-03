@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use cesu8::to_java_cesu8;
+use sha1::{Digest, Sha1};
 
 use crate::asc_core::utils::leb128::write_uleb128;
 use crate::asc_core::utils::leb128::write_sleb128;
@@ -709,10 +710,12 @@ impl<'a, 'b> DexBuilder<'a, 'b> {
         self.out[104..108].copy_from_slice(&(file_size - 0x70).to_le_bytes());
         self.out[108..112].copy_from_slice(&0x70u32.to_le_bytes());
 
-        // signature
-        self.out[12..32].copy_from_slice(&[0u8; 20]);
-        // checksum
-        self.out[8..12].copy_from_slice(&[0u8; 4]);
+        // signature: SHA-1 over the bytes after the signature field
+        let signature = Sha1::digest(&self.out[32..]);
+        self.out[12..32].copy_from_slice(&signature);
+        // checksum: Adler-32 over signature + the rest of the file
+        let checksum = adler2::adler32_slice(&self.out[12..]);
+        self.out[8..12].copy_from_slice(&checksum.to_le_bytes());
 
         if self.debug {
             let t_header = Instant::now();

@@ -12,6 +12,7 @@ use crate::asc_client::manifest_handler::get_manifest_xml;
 use crate::asc_core::findrefs::findrefs_manager::FindRefInput;
 use crate::asc_core::findrefs::locator::field_locator::FieldFind;
 use crate::asc_core::findrefs::locator::method_locator::MethodFind;
+use crate::asc_core::utils::decompiler::DecompilerEngine;
 
 fn _format_class_name(name: &str) -> Result<String, String> {
     if name.is_empty() {
@@ -139,13 +140,17 @@ fn _handle_getclass(args: &ArgMatches) -> Result<(), String> {
     let dalvik_class = _format_class_name(args.get_one::<String>("dalvik_class").unwrap())?;
     let debug = args.get_flag("debug");
     let thread = _get_worker_count(args)?;
+    let engine = args
+        .get_one::<String>("engine")
+        .expect("engine has a default")
+        .parse::<DecompilerEngine>()?;
 
     let apk_handler = ApkHandler::new(apk_path, debug, thread);
     let (dex_name, dex_buf) = apk_handler
         .get_class_dex(&dalvik_class)
         .ok_or_else(|| format!("Class {dalvik_class} not found in APK."))?;
     let t_hit_end = Instant::now();
-    let source_code = AscHandler::new(debug).getclass(&dex_buf, &dalvik_class);
+    let source_code = AscHandler::new(debug).getclass_with_engine(&dex_buf, &dalvik_class, engine);
     let t_end = Instant::now();
 
     if debug {
@@ -176,8 +181,8 @@ fn _handle_listclass(args: &ArgMatches) -> Result<(), String> {
     let prefix = args.get_one::<String>("prefix").map(String::as_str);
     let handler = ApkHandler::new(apk_path, debug, thread);
     if let Some(output) = args.get_one::<String>("output") {
-        let mut file = File::create(output)
-            .map_err(|error| format!("cannot write {output}: {error}"))?;
+        let mut file =
+            File::create(output).map_err(|error| format!("cannot write {output}: {error}"))?;
         handler.for_each_class_chunk(prefix, |chunk| {
             file.write_all(chunk)
                 .map_err(|error| format!("cannot write {output}: {error}"))
@@ -209,8 +214,8 @@ fn _handle_listmethod(args: &ArgMatches) -> Result<(), String> {
     let filter = args.get_one::<String>("filter").map(String::as_str);
     let handler = ApkHandler::new(apk_path, debug, thread);
     if let Some(output) = args.get_one::<String>("output") {
-        let mut file = File::create(output)
-            .map_err(|error| format!("cannot write {output}: {error}"))?;
+        let mut file =
+            File::create(output).map_err(|error| format!("cannot write {output}: {error}"))?;
         handler.for_each_method_chunk(class, filter, |chunk| {
             file.write_all(chunk)
                 .map_err(|error| format!("cannot write {output}: {error}"))
@@ -240,8 +245,8 @@ fn _handle_liststring(args: &ArgMatches) -> Result<(), String> {
     let filter = args.get_one::<String>("filter").map(String::as_str);
     let handler = ApkHandler::new(apk_path, debug, thread);
     if let Some(output) = args.get_one::<String>("output") {
-        let mut file = File::create(output)
-            .map_err(|error| format!("cannot write {output}: {error}"))?;
+        let mut file =
+            File::create(output).map_err(|error| format!("cannot write {output}: {error}"))?;
         handler.for_each_string_chunk(filter, |chunk| {
             file.write_all(chunk)
                 .map_err(|error| format!("cannot write {output}: {error}"))
@@ -531,6 +536,14 @@ pub fn _build_main_parser() -> Command {
         .subcommand(common_args(
             Command::new("getclass")
                 .about("Locate the target class in APK, extract one DEX in memory, then decompile.")
+                .arg(
+                    Arg::new("engine")
+                        .long("engine")
+                        .value_name("ENGINE")
+                        .value_parser(["dexdec", "radguard"])
+                        .default_value("dexdec")
+                        .help("Decompiler engine to use."),
+                )
                 .arg(
                     Arg::new("output")
                         .short('o')

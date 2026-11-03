@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Rust
+/target/
+**/*.rs.bk
+/javac.*.args
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Local scratch
+/tmp/
+/refer/
+/.idea/
+/.codegraph/

@@ -15,6 +15,8 @@ struct GetClass {
     class_name: String,
     /// Positive worker count. Defaults to available CPU count.
     thread: Option<usize>,
+    /// Decompiler engine: dexdec (default) or radguard.
+    engine: Option<String>,
     /// Optional source output file. Existing files are overwritten. Content is also returned.
     output: Option<String>,
 }
@@ -188,6 +190,10 @@ fn push_thread(args: &mut Vec<OsString>, thread: Option<usize>) {
 fn getclass(input: GetClass) -> Vec<OsString> {
     let mut args = vec!["getclass".into()];
     push_thread(&mut args, input.thread);
+    if let Some(engine) = input.engine {
+        args.push("--engine".into());
+        args.push(engine.into());
+    }
     args.push(input.apk_path.into());
     args.push(input.class_name.into());
     push_output(&mut args, input.output);

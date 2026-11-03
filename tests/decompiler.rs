@@ -5,13 +5,13 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use dex_fixture::{get_u32, make_dex, make_static_field_dex};
+use dex_fixture::{get_u32, make_class_only_dex, make_dex, make_static_field_dex, put_u32};
 use rust_ASC::asc_client::asc_handler::AscHandler;
 use rust_ASC::asc_core::core::dex::dex_manager::DexManager;
-use rust_ASC::asc_core::utils::dex_parser::{parse_encoded_array, EncodedValue};
+use rust_ASC::asc_core::utils::dex_parser::{EncodedValue, parse_encoded_array};
 use rust_ASC::asc_core::utils::tinydex::DEX;
 use tempfile::tempdir;
-use zip_fixture::{write_apk, CompressionMethod};
+use zip_fixture::{CompressionMethod, write_apk};
 
 fn run_cli(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_rust_ASC"))
@@ -25,10 +25,16 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
-fn rebuilt_dex_keeps_signature_and_checksum_zero() {
+fn rebuilt_dex_has_matching_signature_and_checksum() {
+    use sha1::{Digest, Sha1};
+
     let mut manager = DexManager::from_bytes(make_dex(), false);
     let data = manager.extract_and_rebuild("Lexample/Test;");
-    assert_eq!(&data[8..32], &[0; 24]);
+    assert_eq!(&data[12..32], Sha1::digest(&data[32..]).as_slice());
+    assert_eq!(
+        u32::from_le_bytes(data[8..12].try_into().unwrap()),
+        adler2::adler32_slice(&data[12..])
+    );
 }
 
 #[test]
@@ -101,6 +107,22 @@ fn decompile_keeps_repeated_fast_path_and_class_zero() {
 }
 
 #[test]
+fn decompile_preserves_original_dex_identifiers() {
+    use sha1::{Digest, Sha1};
+
+    let mut data = make_class_only_dex(&["LX/02me;"], 0, b"035");
+    let signature = Sha1::digest(&data[32..]);
+    data[12..32].copy_from_slice(&signature);
+    let checksum = adler2::adler32_slice(&data[12..]);
+    put_u32(&mut data, 8, checksum);
+
+    let source = AscHandler::new(false).getclass(&data, "LX/02me;");
+    assert!(source.contains("package X;"), "{source}");
+    assert!(source.contains("class 02me"), "{source}");
+    assert!(!source.contains("class C02me"), "{source}");
+}
+
+#[test]
 fn cli_on_stored_and_compressed_multidex_apk() {
     let first = make_dex();
     let second = make_dex();
@@ -114,24 +136,25 @@ fn cli_on_stored_and_compressed_multidex_apk() {
             compression,
         );
         let apk_path = apk.to_str().unwrap();
-        let search = run_cli(&[
-            "findrefs",
-            "--thread",
-            "2",
-            apk_path,
-            "string",
-            "token",
-        ]);
+        let search = run_cli(&["findrefs", "--thread", "2", apk_path, "string", "token"]);
         assert!(search.status.success(), "{}", stderr(&search));
-        assert_eq!(
-            String::from_utf8(search.stdout).unwrap().lines().count(),
-            4
-        );
+        assert_eq!(String::from_utf8(search.stdout).unwrap().lines().count(), 4);
 
         let source = run_cli(&["getclass", "--thread", "2", apk_path, "example.Test"]);
         assert!(source.status.success(), "{}", stderr(&source));
-        assert!(String::from_utf8(source.stdout)
-            .unwrap()
-            .contains("class Test"));
+        let default_source = String::from_utf8(source.stdout).unwrap();
+        assert!(default_source.contains("class Test"));
+
+        let dexdec = run_cli(&["getclass", "--engine", "dexdec", apk_path, "example.Test"]);
+        assert!(dexdec.status.success(), "{}", stderr(&dexdec));
+        assert_eq!(String::from_utf8(dexdec.stdout).unwrap(), default_source);
+
+        let radguard = run_cli(&["getclass", "--engine", "radguard", apk_path, "example.Test"]);
+        assert!(radguard.status.success(), "{}", stderr(&radguard));
+        assert!(
+            String::from_utf8(radguard.stdout)
+                .unwrap()
+                .contains("class Test")
+        );
     }
 }

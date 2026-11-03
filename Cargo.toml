@@ -10,10 +10,15 @@ mcp = ["dep:rmcp", "dep:tokio", "dep:serde", "dep:serde_json", "dep:schemars"]
 
 [profile.release]
 opt-level = 3           # max speed
-lto = "fat"             # full link-time optimization
-codegen-units = 1       # single compilation unit, more inlining
+lto = false             # avoid multi-minute whole-program LLVM linking
+codegen-units = 16      # parallelize release code generation
+incremental = true      # reuse optimized codegen across local rebuilds
 strip = "symbols"       # remove debug symbols
 panic = "abort"         # smaller binary, no unwind tables
+
+[profile.release.package.dexdec]
+opt-level = 1           # dexdec upstream's fast profile avoids pathological LLVM time
+codegen-units = 16      # match the machine's parallelism without 256-object overhead
 
 [profile.dev]
 debug = true
@@ -34,12 +39,13 @@ lazy_static = "1"
 apk-info-axml = "1.0.13"
 quick-xml = "0.36"
 memchr = "2"
+sha1 = "0.10"
+adler2 = "2"
 radguard = { path = "radguard" }
+dexdec = { path = "dexdec/dexdec", default-features = false }
 clap = "4"
 mimalloc = { version = "0.1", default-features = false }
 
 [dev-dependencies]
 regex = "1"
-adler2 = "2"
-sha1 = "0.10"
 tempfile = "3"

@@ -5,13 +5,12 @@ use std::collections::{HashMap, HashSet};
 use std::vec;
 
 use crate::asc_core::core::dex::dex_manager::DexManager;
-use crate::asc_core::findrefs::findrefs_manager::{
-    FindRefInput, FindRefManager, FindRefResult,
-};
+use crate::asc_core::findrefs::findrefs_manager::{FindRefInput, FindRefManager, FindRefResult};
 use crate::asc_core::findrefs::locator::field_locator::FieldFind;
 use crate::asc_core::findrefs::locator::method_locator::MethodFind;
 use crate::asc_core::utils::decompiler::{
-    decompile_dex_bytes, decompile_dex_bytes_with_metadata, MemberReference,
+    DecompilerEngine, MemberReference, decompile_dex_bytes_with_engine,
+    decompile_dex_bytes_with_metadata,
 };
 use crate::asc_core::utils::tinydex::DEX;
 
@@ -29,9 +28,18 @@ impl AscHandler {
 
     /// Extract and decompile the specified class.
     pub fn getclass(&self, dex_buf: &[u8], dalvik_class: &str) -> String {
+        self.getclass_with_engine(dex_buf, dalvik_class, DecompilerEngine::Dexdec)
+    }
+
+    pub fn getclass_with_engine(
+        &self,
+        dex_buf: &[u8],
+        dalvik_class: &str,
+        engine: DecompilerEngine,
+    ) -> String {
         let mut manager = DexManager::from_bytes(dex_buf.to_vec(), self.debug);
         let new_dex_bytes = manager.extract_and_rebuild(dalvik_class);
-        decompile_dex_bytes(&new_dex_bytes, dalvik_class)
+        decompile_dex_bytes_with_engine(&new_dex_bytes, dalvik_class, engine)
     }
 
     pub fn getclass_with_metadata(
@@ -109,7 +117,10 @@ impl AscHandler {
         };
 
         if profile {
-            eprintln!("[PROF] find_ref={:.3}ms", (tf1.unwrap() - tf0.unwrap()).as_secs_f64() * 1e3);
+            eprintln!(
+                "[PROF] find_ref={:.3}ms",
+                (tf1.unwrap() - tf0.unwrap()).as_secs_f64() * 1e3
+            );
         }
         let out = match output {
             FindRefResult::ClassDefs(class_idxs) => {
@@ -154,7 +165,9 @@ impl AscHandler {
             for (i, mid_entry) in mids.iter().enumerate() {
                 let idx = matched_idxs.get(i).copied().unwrap_or(0);
                 let matched = self._format_matched_name(&dex, find_type, idx);
-                let Some(mid_list) = mid_entry else { continue; };
+                let Some(mid_list) = mid_entry else {
+                    continue;
+                };
                 for &mid in mid_list {
                     ret.push(format!(
                         "{} | {} | matched=({})",
@@ -171,7 +184,9 @@ impl AscHandler {
         let mut grouped: HashMap<usize, HashSet<usize>> = HashMap::new();
         for (i, mid_entry) in mids.iter().enumerate() {
             let idx = matched_idxs.get(i).copied().unwrap_or(0);
-            let Some(mid_list) = mid_entry else { continue; };
+            let Some(mid_list) = mid_entry else {
+                continue;
+            };
             for &mid in mid_list {
                 grouped.entry(mid as usize).or_default().insert(idx);
             }

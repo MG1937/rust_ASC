@@ -9,3 +9,12 @@ debug_out.txt
 rust_output.txt
 target/
 
+# local command output and ad-hoc dumps
+/*_out.txt
+/t[0-9]*.txt
+/*.log
+/*.dump
+/dump*/
+/tests/permuted_string_order.dex
+/tests/permuted_string_order.apk
+

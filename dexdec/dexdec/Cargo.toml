@@ -1,0 +1,33 @@
+[package]
+name = "dexdec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+description = "Next-gen Dex decompiler core library"
+documentation = "https://docs.rs/dexdec"
+keywords = ["android", "dex", "decompiler", "reverse-engineering"]
+categories = ["development-tools"]
+
+[features]
+default = ["archive", "kotlin"]
+archive = ["rusty-dex/apk"]
+kotlin = []
+
+[package.metadata.upstream]
+repository = "https://github.com/asLody/dexdec"
+revision = "08ed478781ddddb16381c31b9cf6d8946fdf2919"
+# Vendored decompilation library; application and standalone tooling removed.
+
+[dependencies]
+rusty-dex = { path = "../rusty-dex", version = "0.2.0", default-features = false }
+mimalloc = "0.1"
+bitflags = "2"
+rayon = "1"
+crc32fast = "1"
+zstd = "0.11"
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3.24.0"

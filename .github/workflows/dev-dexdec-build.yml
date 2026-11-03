@@ -1,0 +1,107 @@
+name: Dev DexDec Build
+
+on:
+  push:
+    branches:
+      - dev-dexdec
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-dexdec-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.asset_name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_name: rust_ASC-windows-x86_64.exe
+          - os: windows-latest
+            target: i686-pc-windows-msvc
+            asset_name: rust_ASC-windows-x86.exe
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            asset_name: rust_ASC-windows-aarch64.exe
+
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_name: rust_ASC-linux-x86_64
+            cross: false
+          - os: ubuntu-latest
+            target: i686-unknown-linux-gnu
+            asset_name: rust_ASC-linux-x86
+            cross: true
+          - os: ubuntu-latest
+            target: armv7-unknown-linux-gnueabihf
+            asset_name: rust_ASC-linux-armv7
+            cross: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            asset_name: rust_ASC-linux-aarch64
+            cross: true
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            asset_name: rust_ASC-linux-x86_64-musl
+            cross: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            asset_name: rust_ASC-linux-aarch64-musl
+            cross: true
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset_name: rust_ASC-macos-aarch64
+            cross: false
+
+    steps:
+      - name: Check out source and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@cross
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --locked --target "${{ matrix.target }}"
+          else
+            cargo build --release --locked --target "${{ matrix.target }}"
+          fi
+
+      - name: Stage raw release binary
+        run: |
+          mkdir -p release-assets
+          cp "target/${{ matrix.target }}/release/rust_ASC${{ runner.os == 'Windows' && '.exe' || '' }}" "release-assets/${{ matrix.asset_name }}"
+
+      - name: Upload raw release binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: release-assets/${{ matrix.asset_name }}
+          if-no-files-found: error
+          retention-days: 14

@@ -46,3 +46,22 @@ fn plural_threads_option_is_rejected() {
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("unexpected argument '--threads'"));
 }
+
+#[test]
+fn getclass_engine_is_constrained_to_supported_values() {
+    let help = run_cli(&["getclass", "--help"]);
+    let help = stderr(&help);
+    assert!(help.contains("--engine <ENGINE>"), "{help}");
+    assert!(help.contains("dexdec"), "{help}");
+    assert!(help.contains("radguard"), "{help}");
+
+    let invalid = run_cli(&[
+        "getclass",
+        "--engine",
+        "unknown",
+        "fixture.apk",
+        "example.Test",
+    ]);
+    assert_eq!(invalid.status.code(), Some(1));
+    assert!(stderr(&invalid).contains("invalid value 'unknown'"));
+}
