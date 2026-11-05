@@ -1,6 +1,7 @@
 // Auth: MG1937
 // Strict 1:1 translation from Python apk_handler.py
 
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -327,6 +328,66 @@ impl ApkHandler {
             },
         )?;
         Ok(rows)
+    }
+
+    /// List unique dotted packages containing defined classes, sorted lexically.
+    /// Default-package classes are omitted; parent-only packages are not synthesized.
+    pub fn list_packages(&self, prefix: Option<&str>) -> Result<Vec<String>, String> {
+        self.list_packages_at_level(prefix, None)
+    }
+
+    /// Filter full package names first, then merge to at most `level` segments.
+    /// Level is absolute (com.example.feature has level 3); shorter names stay intact.
+    pub fn list_packages_at_level(
+        &self,
+        prefix: Option<&str>,
+        level: Option<usize>,
+    ) -> Result<Vec<String>, String> {
+        if self.max_workers == 0 {
+            return Err("Worker count must be greater than zero".to_owned());
+        }
+        if level == Some(0) {
+            return Err("Package level must be greater than zero".to_owned());
+        }
+        let prefix = prefix.map(str::trim).map(|value| {
+            if value.is_empty() {
+                Err("Package prefix cannot be empty".to_owned())
+            } else {
+                Ok(value.replace('/', "."))
+            }
+        }).transpose()?;
+        let mut packages = BTreeSet::new();
+        self._stream_dex_items(
+            "package",
+            |buf| {
+                let mut dex_packages = BTreeSet::new();
+                for name in list_dex_classes(buf, None, None)? {
+                    if let Some(body) = name.strip_prefix('L').and_then(|s| s.strip_suffix(';')) {
+                        if let Some((package, _)) = body.rsplit_once('/') {
+                            if !package.is_empty() {
+                                let package = package.replace('/', ".");
+                                if prefix.as_deref().is_none_or(|p| package.starts_with(p)) {
+                                    let package = match level {
+                                        Some(level) => package.split('.').take(level).collect::<Vec<_>>().join("."),
+                                        None => package,
+                                    };
+                                    dex_packages.insert(package);
+                                }
+                            }
+                        }
+                    }
+                }
+                let count = dex_packages.len();
+                Ok((dex_packages.into_iter().map(String::into_bytes).collect(), count))
+            },
+            Some(&class_names_prefix_len),
+            |bytes| {
+                packages.insert(String::from_utf8(bytes)
+                    .map_err(|error| format!("invalid UTF-8 package name: {error}"))?);
+                Ok(())
+            },
+        )?;
+        Ok(packages.into_iter().collect())
     }
 
     /// List defined method signatures in DEX declaration order.

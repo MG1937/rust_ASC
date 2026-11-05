@@ -205,6 +205,116 @@ fn _handle_listclass(args: &ArgMatches) -> Result<(), String> {
     Ok(())
 }
 
+fn render_package_tree(packages: &[String], classes: &[String], root: Option<&str>, level: Option<usize>) -> String {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    if packages.is_empty() {
+        return String::new();
+    }
+    let mut nodes = BTreeSet::new();
+    let mut last_children = BTreeMap::new();
+    for package in packages {
+        let relative = match root {
+            Some(root) if package == root => continue,
+            Some(root) => &package[root.len() + 1..],
+            None => package.as_str(),
+        };
+        let parts: Vec<_> = relative.split('.').collect();
+        for depth in 1..=level.unwrap_or(parts.len()).min(parts.len()) {
+            nodes.insert(parts[..depth].iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
+        }
+    }
+    for descriptor in classes {
+        let Some(body) = descriptor.strip_prefix('L').and_then(|s| s.strip_suffix(';')) else { continue; };
+        let Some((package, class)) = body.rsplit_once('/') else { continue; };
+        let package = package.replace('/', ".");
+        let relative = match root {
+            Some(root) if package == root => "",
+            Some(root) => match package.strip_prefix(&format!("{root}.")) {
+                Some(relative) => relative,
+                None => continue,
+            },
+            None => package.as_str(),
+        };
+        let mut path: Vec<String> = if relative.is_empty() { Vec::new() } else { relative.split('.').map(str::to_owned).collect() };
+        if level.is_some_and(|limit| path.len() > limit) { continue; }
+        // A suffix distinguishes class leaves from package nodes of the same name.
+        path.push(format!("{class}.class"));
+        nodes.insert(path);
+    }
+    // Sorted paths give each parent its lexically last child.
+    for path in &nodes {
+        last_children.insert(path[..path.len() - 1].to_vec(), &path[path.len() - 1]);
+    }
+    let mut text = format!("{}\n", root.unwrap_or("."));
+    for path in &nodes {
+        for depth in 1..path.len() {
+            let last = last_children[&path[..depth - 1]] == &path[depth - 1];
+            text.push_str(if last { "    " } else { "│   " });
+        }
+        let last = last_children[&path[..path.len() - 1]] == &path[path.len() - 1];
+        text.push_str(if last { "└── " } else { "├── " });
+        text.push_str(&path[path.len() - 1]);
+        text.push('\n');
+    }
+    text
+}
+
+fn _handle_tree_package(args: &ArgMatches) -> Result<(), String> {
+    let start = Instant::now();
+    let apk_path = args.get_one::<String>("apk_path").unwrap();
+    let debug = args.get_flag("debug");
+    let handler = ApkHandler::new(apk_path, debug, _get_worker_count(args)?);
+    let tree = !args.get_flag("flat");
+    let prefix = args.get_one::<String>("prefix").map(String::as_str);
+    let level = args.get_one::<usize>("level").copied();
+    if level == Some(0) {
+        return Err("Package level must be greater than zero".to_owned());
+    }
+    let root = if tree {
+        prefix.map(|p| p.trim().replace('/', ".").trim_end_matches('.').to_owned())
+    } else {
+        None
+    };
+    if root.as_deref().is_some_and(|r| r.is_empty() || r.split('.').any(str::is_empty)) {
+        return Err("Tree root must be a non-empty package path".to_owned());
+    }
+    let classes = if args.get_flag("classes") {
+        handler.list_classes(root.as_deref())?
+    } else {
+        Vec::new()
+    };
+    let mut packages = if args.get_flag("classes") {
+        classes.iter().filter_map(|name| {
+            name.strip_prefix('L')?.strip_suffix(';')?.rsplit_once('/').map(|(p, _)| p.replace('/', "."))
+        }).filter(|p| !p.is_empty()).collect::<std::collections::BTreeSet<_>>().into_iter().collect()
+    } else {
+        handler.list_packages_at_level(root.as_deref().or(prefix), if tree { None } else { level })?
+    };
+    if let Some(root) = root.as_deref() {
+        let child_prefix = format!("{root}.");
+        packages.retain(|p| p == root || p.starts_with(&child_prefix));
+    }
+    let text = if tree {
+        render_package_tree(&packages, &classes, root.as_deref(), level)
+    } else if packages.is_empty() {
+        String::new()
+    } else {
+        packages.join("\n") + "\n"
+    };
+    if let Some(output) = args.get_one::<String>("output") {
+        fs::write(output, &text).map_err(|error| format!("cannot write {output}: {error}"))?;
+    } else {
+        io::stdout().lock().write_all(text.as_bytes())
+            .map_err(|error| format!("cannot write stdout: {error}"))?;
+    }
+    if debug {
+        println!("[DEBUG] Packages: {}", packages.len());
+        println!("[DEBUG] Total Execution Time: {:.2} us", start.elapsed().as_secs_f64() * 1_000_000.0);
+    }
+    Ok(())
+}
+
 fn _handle_listmethod(args: &ArgMatches) -> Result<(), String> {
     let t_start = Instant::now();
     let apk_path = args.get_one::<String>("apk_path").unwrap();
@@ -574,6 +684,16 @@ pub fn _build_main_parser() -> Command {
                 .arg(Arg::new("apk_path").required(true).help("Path to the input APK file.")),
         ))
         .subcommand(common_args(
+            Command::new("tree")
+                .about("Show a code package tree; --prefix selects the root and -L limits child depth.")
+                .arg(Arg::new("apk_path").required(true).help("Path to the input APK file."))
+                .arg(Arg::new("prefix").long("prefix").help("Case sensitive package prefix (e.g., com.example)."))
+                .arg(Arg::new("level").short('L').long("level").value_parser(value_parser!(usize)).help("Positive depth: relative to --prefix in tree mode, absolute segments in flat mode."))
+                .arg(Arg::new("flat").long("flat").action(ArgAction::SetTrue).help("Output a sorted flat list instead; -L uses absolute depth in this mode."))
+                .arg(Arg::new("classes").long("classes").action(ArgAction::SetTrue).conflicts_with("flat").help("Include .class leaves in visible packages; classes do not consume package depth."))
+                .arg(Arg::new("output").short('o').long("output").help("Write package names to this file instead of stdout.")),
+        ))
+        .subcommand(common_args(
             Command::new("listmethod")
                 .about("List method definitions across all DEX entries without decompilation.")
                 .arg(Arg::new("apk_path").required(true).help("Path to the input APK file."))
@@ -658,6 +778,7 @@ where
         Some(("mcp", _)) => crate::mcp::run(),
         Some(("getclass", args)) => _handle_getclass(args),
         Some(("listclass", args)) => _handle_listclass(args),
+        Some(("tree", args)) => _handle_tree_package(args),
         Some(("listmethod", args)) => _handle_listmethod(args),
         Some(("liststring", args)) => _handle_liststring(args),
         Some(("export", args)) => _handle_export(args),

@@ -65,7 +65,7 @@ On Windows, the executable name is `rust_ASC.exe`.
 
 ## Command Line Usage
 
-Thread control is consistent across `getclass`, `listclass`, `listmethod`, `liststring`, `findrefs`, and `export`:
+Thread control is consistent across `getclass`, `listclass`, `tree`, `listmethod`, `liststring`, `findrefs`, and `export`:
 
 - Use only `--thread <N>`.
 - Put `--thread` immediately after the subcommand.
@@ -95,6 +95,16 @@ rust_ASC getclass --thread 10 app.apk com.example.Main -o Main.java
 rust_ASC listclass --thread 10 app.apk
 rust_ASC listclass --thread 10 --prefix com.example app.apk
 
+# List unique code packages, optionally filtered by package prefix.
+rust_ASC tree app.apk
+rust_ASC tree --prefix com.commercepro app.apk
+rust_ASC tree -L 3 app.apk
+rust_ASC tree --prefix com.commercepro.edit -L 2 app.apk
+rust_ASC tree --prefix com.commercepro.edit -L 1 app.apk
+rust_ASC tree app.apk -o packages.txt
+rust_ASC tree --flat -L 3 app.apk
+rust_ASC tree --prefix com.commercepro.edit.export --classes -L 1 app.apk
+
 # List method definitions without decompiling, optionally filtered by class/name.
 rust_ASC listmethod --thread 10 app.apk
 rust_ASC listmethod --class com.example.Main -f onCreate app.apk
@@ -114,6 +124,8 @@ rust_ASC export --thread 10 --debug app.apk output
 
 `findrefs` takes `string`, `type`, `extends`, `impl`, `method`, or `field`. `extends` and `impl` print matching class descriptors; the rest print referencing methods. For `method` and `field`, `--class` is an exact dotted name or Dalvik descriptor, and `--fuzzy-class` makes it a case sensitive substring. `-o` also writes the output to a file.
 
+`tree` renders a sorted Unicode code package tree across all DEX files (including DEX 041 containers), without decompilation. `--prefix` selects an exact package-path root, and `-L N` / `--level N` shows N child levels relative to that root, like `tree DIR -L N`. For example, `--prefix com.commercepro.edit -L 1` shows the edit package and its direct children, excluding editapi. Dotted and slash-separated roots and a trailing separator are accepted. Without a root, the tree starts at `.`. N must be positive; omit it for full depth. Structural ancestors may not contain defined classes. Default-package classes and referenced external types are omitted. An empty result emits no text. `-o` writes to a file instead of stdout. `--flat` outputs unique sorted dotted names instead; in that mode `--prefix` is a textual prefix and `-L` uses absolute depth. `--classes` adds sorted, deduplicated class leaves labeled `Name.class` (including `$` inner-class names) to visible packages without decompilation. Classes do not consume package depth; deeper classes are omitted rather than moved up. The `.class` suffix is a display label, not an extracted file. Default-package classes remain omitted. `--classes` cannot combine with `--flat`. The MCP tool `tree` accepts `apk_path`, optional `prefix`, `level`, `flat`, `classes`, `thread`, and `output` with the same semantics.
+
 `listmethod` prints one Dalvik method descriptor per line, for example `Lcom/example/Main;->onCreate(Landroid/os/Bundle;)V`. It lists only methods defined in class data, in DEX/class/declaration order with duplicates preserved. `--class` takes an exact dotted name or descriptor; `-f` is a case insensitive name substring. `-o` writes to a file instead of stdout.
 
 `liststring` prints one string pool value per line, straight from the DEX string table, including literals nothing references. Order is DEX central-directory then string index; duplicates across DEX files are preserved. `-f` is a case insensitive substring filter, while `findrefs string` is case sensitive. `-o` writes to a file instead of stdout. Values containing newlines span multiple lines.
@@ -122,7 +134,7 @@ rust_ASC export --thread 10 --debug app.apk output
 
 ## MCP
 
-`rust_ASC mcp` runs a stdio MCP server that exposes the CLI commands as tools: `getclass`, `listclass`, `listmethod`, `liststring`, `getmanifest`, and `findrefs`. Each call spawns a fresh CLI process, so behavior always matches the command line.
+`rust_ASC mcp` runs a stdio MCP server that exposes the CLI commands as tools: `getclass`, `listclass`, `tree`, `listmethod`, `liststring`, `getmanifest`, and `findrefs`. Each call spawns a fresh CLI process, so behavior always matches the command line.
 
 The `listmethod` tool accepts `apk_path`, optional `class_name`, `filter`, `thread`, and `output`. It returns exactly the CLI stdout; with `output`, it writes the method list to that file and returns empty text.
 

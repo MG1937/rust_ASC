@@ -152,7 +152,43 @@ fn cli_stdout(args: impl IntoIterator<Item = OsString>) -> String {
 }
 
 #[test]
-fn exposes_six_documented_cli_wrappers() {
+fn tree_package_matches_cli_and_supports_output() {
+    let directory = tempdir().unwrap();
+    let apk = directory.path().join("fixture.apk");
+    let dex = make_dex();
+    write_apk(&apk, &[("classes.dex", &dex)], CompressionMethod::Deflated);
+    let mut client = Client::new();
+    let result = client.call("tree", json!({"apk_path": apk, "prefix": "example", "thread": 2}));
+    assert_ne!(result["isError"], true);
+    assert_eq!(text(&result), "example\n");
+    let result = client.call("tree", json!({"apk_path": apk, "level": 1}));
+    assert_ne!(result["isError"], true);
+    assert_eq!(text(&result), ".\n└── example\n");
+    let result = client.call("tree", json!({"apk_path": apk, "prefix": "example", "level": 1}));
+    assert_ne!(result["isError"], true);
+    assert_eq!(text(&result), "example\n");
+    let result = client.call("tree", json!({"apk_path": apk, "flat": true, "level": 1}));
+    assert_ne!(result["isError"], true);
+    assert_eq!(text(&result), "example\n");
+    let result = client.call("tree", json!({"apk_path": apk, "prefix": "example", "classes": true, "level": 1}));
+    assert_ne!(result["isError"], true);
+    assert_eq!(text(&result), "example\n└── Test.class\n");
+    let result = client.call("tree", json!({"apk_path": apk, "classes": true, "flat": true}));
+    assert_eq!(result["isError"], true);
+    let result = client.call("tree", json!({"apk_path": apk, "level": 0}));
+    assert_eq!(result["isError"], true);
+    let file = directory.path().join("packages.txt");
+    let result = client.call("tree", json!({"apk_path": apk, "output": file}));
+    assert_ne!(result["isError"], true);
+    assert_eq!(text(&result), "");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), ".\n└── example\n");
+    let result = client.call("tree", json!({"apk_path": apk, "thread": 0}));
+    assert_eq!(result["isError"], true);
+    client.finish();
+}
+
+#[test]
+fn exposes_seven_documented_cli_wrappers() {
     let mut client = Client::new();
     client.send(json!({"jsonrpc":"2.0", "id":99, "method":"tools/list"}));
     let response = client.recv();
@@ -170,7 +206,8 @@ fn exposes_six_documented_cli_wrappers() {
             "getmanifest",
             "listclass",
             "listmethod",
-            "liststring"
+            "liststring",
+            "tree"
         ]
     );
     for tool in tools {
@@ -195,7 +232,7 @@ fn exposes_six_documented_cli_wrappers() {
         let output = tool["inputSchema"]["properties"]["output"]["description"]
             .as_str()
             .unwrap();
-        if ["listclass", "listmethod", "liststring"].contains(&tool["name"].as_str().unwrap()) {
+        if ["listclass", "tree", "listmethod", "liststring"].contains(&tool["name"].as_str().unwrap()) {
             assert!(output.contains("stdout is empty."));
         } else {
             assert!(output.contains("Content is also returned."));

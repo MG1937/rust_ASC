@@ -36,6 +36,27 @@ struct ListClass {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct ListPackage {
+    /// Path to the APK to analyze.
+    apk_path: String,
+    /// Case sensitive prefix; exact subtree root in tree mode.
+    prefix: Option<String>,
+    /// Positive depth: relative to tree root, absolute in flat mode. Omit for full depth.
+    level: Option<usize>,
+    /// Output a sorted flat list instead of the default Unicode tree.
+    #[serde(default)]
+    flat: bool,
+    /// Include class leaves in visible packages. Cannot combine with flat.
+    #[serde(default)]
+    classes: bool,
+    /// Positive worker count. Defaults to available CPU count.
+    thread: Option<usize>,
+    /// Optional output file. When set, stdout is empty. Existing files are overwritten.
+    output: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct ListMethod {
     /// Path to the APK to analyze.
     apk_path: String,
@@ -138,6 +159,10 @@ pub(super) fn tools() -> Vec<Tool> {
             "listclass",
             "List class descriptors from every DEX in an APK.",
         ),
+        tool::<ListPackage>(
+            "tree",
+            "Show a code package tree with optional root and relative depth.",
+        ),
         tool::<ListMethod>(
             "listmethod",
             "List defined method descriptors from every DEX in an APK.",
@@ -166,6 +191,7 @@ impl Query {
         let args = match name {
             "getclass" => getclass(serde_json::from_value(args).map_err(invalid_args)?),
             "listclass" => listclass(serde_json::from_value(args).map_err(invalid_args)?),
+            "tree" => tree_package(serde_json::from_value(args).map_err(invalid_args)?),
             "listmethod" => listmethod(serde_json::from_value(args).map_err(invalid_args)?),
             "liststring" => liststring(serde_json::from_value(args).map_err(invalid_args)?),
             "getmanifest" => getmanifest(serde_json::from_value(args).map_err(invalid_args)?),
@@ -209,6 +235,27 @@ fn listclass(input: ListClass) -> Vec<OsString> {
     }
     args.push(input.apk_path.into());
     push_output(&mut args, input.output);
+    args
+}
+
+fn tree_package(input: ListPackage) -> Vec<OsString> {
+    let mut args = vec!["tree".into()];
+    push_thread(&mut args, input.thread);
+    if let Some(level) = input.level {
+        args.push(format!("--level={level}").into());
+    }
+    if input.flat {
+        args.push("--flat".into());
+    }
+    if input.classes {
+        args.push("--classes".into());
+    }
+    if let Some(prefix) = input.prefix {
+        args.push(format!("--prefix={prefix}").into());
+    }
+    push_output(&mut args, input.output);
+    args.push("--".into());
+    args.push(input.apk_path.into());
     args
 }
 
